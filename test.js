@@ -215,7 +215,7 @@ console.log('\n[Test 6] Populator — XML surgery on minimal DOCX');
     assert(outXml.includes('15.08.2026'), 'UDD Creation Date injected');
     assert(outXml.includes('Enhancement'), 'Development Type injected');
     assert(outXml.includes('Jane Doe'), 'Reviewer injected');
-    assert(outXml.includes('ABAP Developer'), 'Developer Function injected');
+    assert(outXml.includes('John Smith'), 'Developer Name injected');
   } catch (e) {
     console.error('  ✗  populateCRR threw:', e.message);
     failed++;

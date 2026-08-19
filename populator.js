@@ -60,42 +60,37 @@ function buildFieldSpecs(fields) {
     },
     {
       id: 'documentTitle',
-      labels: ['document title', 'crr document title', 'doc title', 'document name', 'title'],
+      labels: ['document title', 'crr document title', 'doc title', 'document name'],
       value: fields.crrTitle,
     },
     {
       id: 'uddCreationDate',
-      // CRR uses "CRR Creation date" label in section 1.1 — map to the same field
+      // CRR section 1.1 uses "CRR Creation date" label — map UDD creation date to it
       labels: ['udd creation date', 'crr creation date', 'creation date', 'document creation date', 'date of creation', 'date created', 'created date'],
       value: fields.uddCreationDate,
     },
     {
       id: 'developmentType',
-      labels: ['development type', 'dev type', 'type of development', 'development type', 'type'],
+      labels: ['development type', 'dev type', 'type of development'],
       value: fields.developmentType,
     },
     {
       id: 'reviewer',
-      // In the CRR the REVIEWER row has FUNCTION and NAME columns — populate both
+      // CRR section 1.2: REVIEWER row has [ROLE][FUNCTION][NAME] — 3 columns
+      // We populate FUNCTION (col 1) with reviewerFunction and NAME (col 2) with reviewer name
       labels: ['reviewer'],
-      value: fields.reviewer,
+      value: fields.reviewer,           // goes into NAME column
       isRoleRow: true,
-      roleFunction: fields.reviewerFunction || 'Coordinator',
-    },
-    {
-      id: 'developerFunction',
-      // Handled as part of developer row — skip standalone injection
-      labels: ['developer function', 'function', 'developer role', 'role'],
-      value: fields.developerFunction,
-      skipIfRoleRow: true,
+      roleFunction: fields.reviewerFunction || 'Coordinator',  // goes into FUNCTION column
     },
     {
       id: 'developerName',
-      // In the CRR the DEVELOPER row has FUNCTION and NAME columns
+      // CRR section 1.2: DEVELOPER row has [ROLE][FUNCTION][NAME] — 3 columns
+      // FUNCTION column always says "Developer" (fixed), NAME column = developer name from UDD
       labels: ['developer'],
-      value: fields.developerName,
+      value: fields.developerName,      // goes into NAME column
       isRoleRow: true,
-      roleFunction: fields.developerFunction,
+      roleFunction: 'Developer',        // always hardcoded — never from UDD
     },
   ];
 }
@@ -137,8 +132,18 @@ function injectValueIntoCell(cellXml, value) {
   });
 
   if (!replaced) {
-    // No existing <w:t> — insert a new run before </w:tc>
-    return result.replace(/<\/w:tc>/, `<w:r><w:t xml:space="preserve">${encoded}</w:t></w:r></w:tc>`);
+    // No existing <w:t> — insert a new run INSIDE the last <w:p>...</w:p> in the cell
+    // A <w:r> MUST be inside a <w:p> — never directly inside <w:tc>
+    if (/<\/w:p>/.test(result)) {
+      // Insert before the last </w:p> in the cell
+      const lastPClose = result.lastIndexOf('</w:p>');
+      return result.substring(0, lastPClose) +
+             `<w:r><w:t xml:space="preserve">${encoded}</w:t></w:r>` +
+             result.substring(lastPClose);
+    }
+    // Fallback: wrap in a full paragraph before </w:tc>
+    return result.replace(/<\/w:tc>/,
+      `<w:p><w:r><w:t xml:space="preserve">${encoded}</w:t></w:r></w:p></w:tc>`);
   }
   return result;
 }
@@ -194,33 +199,49 @@ function processTableRow(rowXml, spec, injected) {
 
     const isMatch = spec.labels.some(lbl => {
       const normLbl = normalizeLabel(lbl);
+      if (spec.isRoleRow) {
+        // For role rows: require exact match AND cell must not be empty
+        return normText.length > 0 && normText === normLbl;
+      }
+      // For non-role rows: require the cell text to equal the label closely
+      // Also require minimum length to avoid matching single-char cells like "Y"
+      if (normText.length < 3) return false;
       return normText === normLbl ||
-             normText.startsWith(normLbl) ||
-             normLbl.includes(normText.replace(/[:\s]+$/, ''));
+             (normText.startsWith(normLbl) && normLbl.length >= 4) ||
+             (normLbl.length >= 6 && normText.includes(normLbl));
     });
 
     if (!isMatch) continue;
 
-    // ── 3-column role row: [REVIEWER/DEVELOPER] [FUNCTION] [NAME] ────────────
-    if (spec.isRoleRow && cells.length >= 3) {
+    // ── 3-column role row: [ROLE][FUNCTION][NAME]  (CRR section 1.2) ─────────
+    // i   = ROLE cell  (REVIEWER / DEVELOPER) — do NOT modify
+    // i+1 = FUNCTION cell — inject roleFunction value
+    // i+2 = NAME cell     — inject value (the person's name)
+    if (spec.isRoleRow && cells.length >= i + 3) {
       let newRowXml = rowXml;
 
-      // Populate the FUNCTION cell (index 1) if spec provides a roleFunction
-      if (spec.roleFunction && isCellBlank(cells[i + 1]?.xml)) {
-        newRowXml = replaceCell(newRowXml, cells[i + 1], injectValueIntoCell(cells[i + 1].xml, spec.roleFunction));
-        // Re-parse cells after modification
-        const updatedCells = splitRowIntoCells(newRowXml);
-        if (updatedCells.length >= 3 && isCellBlank(updatedCells[i + 2]?.xml)) {
-          newRowXml = replaceCell(newRowXml, updatedCells[i + 2], injectValueIntoCell(updatedCells[i + 2].xml, spec.value));
-        } else if (updatedCells.length >= 3) {
-          newRowXml = replaceCell(newRowXml, updatedCells[i + 2], injectValueIntoCell(updatedCells[i + 2].xml, spec.value));
-        }
-      } else if (cells.length >= 3) {
-        // Populate just the NAME cell (last non-label cell)
-        const targetIdx = cells.length - 1;
-        newRowXml = replaceCell(newRowXml, cells[targetIdx], injectValueIntoCell(cells[targetIdx].xml, spec.value));
+      // Step 1: inject FUNCTION into cell i+1
+      if (spec.roleFunction) {
+        const fnCell = cells[i + 1];
+        newRowXml = replaceCell(newRowXml, fnCell, injectValueIntoCell(fnCell.xml, spec.roleFunction));
       }
 
+      // Step 2: inject NAME into cell i+2
+      // Re-parse after step 1 so offsets are correct
+      const updatedCells = splitRowIntoCells(newRowXml);
+      const nameCell = updatedCells[i + 2];
+      if (nameCell) {
+        newRowXml = replaceCell(newRowXml, nameCell, injectValueIntoCell(nameCell.xml, spec.value));
+      }
+
+      injected.add(spec.id);
+      return { modified: true, xml: newRowXml };
+    }
+
+    // ── 2-column role row fallback: [ROLE][NAME] ──────────────────────────────
+    if (spec.isRoleRow && cells.length === i + 2) {
+      const nameCell = cells[i + 1];
+      const newRowXml = replaceCell(rowXml, nameCell, injectValueIntoCell(nameCell.xml, spec.value));
       injected.add(spec.id);
       return { modified: true, xml: newRowXml };
     }
@@ -283,8 +304,12 @@ function injectAfterColonInCell(cellXml, value) {
     return injectValueIntoCell(cellXml, value);
   }
 
+  // Insert AFTER the colon run but we must stay inside the same <w:p>
+  // Find the </w:p> that closes the paragraph containing the colon run
+  const afterRun = runs[colonRunIdx].index + runs[colonRunIdx].length;
+  const pCloseAfter = cellXml.indexOf('</w:p>', afterRun);
+  const insertPos = pCloseAfter !== -1 ? pCloseAfter : afterRun;
   const afterColonRun = `<w:r><w:t xml:space="preserve"> ${encoded}</w:t></w:r>`;
-  const insertPos = runs[colonRunIdx].index + runs[colonRunIdx].length;
   return cellXml.substring(0, insertPos) + afterColonRun + cellXml.substring(insertPos);
 }
 
@@ -357,16 +382,28 @@ function processParagraphs(xml, spec, injected) {
  * @returns {Buffer}          - modified DOCX bytes (valid DOCX, opens in Word)
  */
 function populateCRR(crrBuffer, fields) {
-  // Load with PizZip — use loadOptions to handle both modern and legacy DOCX
-  const zip = new PizZip(crrBuffer, { base64: false });
+  // Load original zip
+  const zip = new PizZip(crrBuffer);
   const specs = buildFieldSpecs(fields);
   const injected = new Set();
 
   // ── Process main document body ────────────────────────────────────────────
   let docXml = zip.file('word/document.xml').asText();
 
-  // Pass 1: table rows
+  // Pass 1: table rows — only process until all fields are injected
+  // We track row index to avoid matching checklist rows deep in the document
+  let rowIndex = 0;
   docXml = docXml.replace(/(<w:tr[ >][\s\S]*?<\/w:tr>)/g, (rowXml) => {
+    const currentRow = rowIndex++;
+    // All target fields are in rows 0-15 (sections 1.1 and 1.2)
+    // Once all specs are injected, stop processing
+    if (injected.size >= specs.length) return rowXml;
+    // Only process rows in the first part of the document (rows 0-20 cover all header sections)
+    // Beyond row 20, only process if we still have role rows to inject
+    const hasRoleRowsLeft = specs.some(s => s.isRoleRow && !injected.has(s.id) && s.value);
+    const hasNonRoleLeft = specs.some(s => !s.isRoleRow && !injected.has(s.id) && s.value);
+    if (currentRow > 20 && !hasRoleRowsLeft && !hasNonRoleLeft) return rowXml;
+    if (currentRow > 50) return rowXml; // hard stop — all target fields found by now
     for (const spec of specs) {
       if (!spec.value || injected.has(spec.id)) continue;
       const result = processTableRow(rowXml, spec, injected);
@@ -392,7 +429,6 @@ function populateCRR(crrBuffer, fields) {
     let hfXml = zip.file(hf).asText();
     let changed = false;
 
-    const beforeTable = hfXml;
     hfXml = hfXml.replace(/(<w:tr[ >][\s\S]*?<\/w:tr>)/g, (rowXml) => {
       for (const spec of specs) {
         if (!spec.value || injected.has(spec.id)) continue;
@@ -411,13 +447,63 @@ function populateCRR(crrBuffer, fields) {
     if (changed) zip.file(hf, hfXml);
   }
 
-  // ── Generate output — IMPORTANT: use type:'nodebuffer', mimetype must be set ─
-  // We must NOT use compression on the [Content_Types].xml and relationships
-  // files, or Word will reject the file.
-  return zip.generate({
+  // ── Generate output ───────────────────────────────────────────────────────
+  // Critical: [Content_Types].xml and all .rels files MUST be stored
+  // without compression (STORE), otherwise Word rejects the file.
+  // We achieve this by generating with per-file compression options.
+  const output = zip.generate({
     type: 'nodebuffer',
+    // Default: compress XML content files
     compression: 'DEFLATE',
     compressionOptions: { level: 6 },
+    // Per-file overrides: structural files must be STORE (no compression)
+    platform: 'UNIX',
+  });
+
+  // PizZip doesn't support per-file compression in generate() directly.
+  // Instead we rebuild the zip correctly by re-reading and re-writing
+  // with STORE for structural files.
+  return rebuildDocx(zip);
+}
+
+/**
+ * Rebuild the DOCX zip with correct per-file compression:
+ * - [Content_Types].xml → STORE (no compression)
+ * - _rels/ and word/_rels/ → STORE
+ * - All other files → DEFLATE
+ *
+ * This is required so that Microsoft Word can open the file.
+ */
+function rebuildDocx(zip) {
+  const outZip = new PizZip();
+
+  // Files that MUST be stored uncompressed per OOXML spec
+  const mustStore = (name) =>
+    name === '[Content_Types].xml' ||
+    name.endsWith('.rels') ||
+    name.startsWith('_rels/');
+
+  for (const [name, fileObj] of Object.entries(zip.files)) {
+    if (fileObj.dir) {
+      // Skip directory entries — PizZip adds them automatically
+      continue;
+    }
+    try {
+      const content = fileObj.asNodeBuffer ? fileObj.asNodeBuffer() : fileObj.asBinary();
+      const useStore = mustStore(name);
+      outZip.file(name, content, {
+        binary: true,
+        compression: useStore ? 'STORE' : 'DEFLATE',
+        compressionOptions: useStore ? {} : { level: 6 },
+      });
+    } catch (e) {
+      // If we can't read as buffer, skip (shouldn't happen)
+      console.error(`Warning: could not copy file ${name}:`, e.message);
+    }
+  }
+
+  return outZip.generate({
+    type: 'nodebuffer',
     mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   });
 }
