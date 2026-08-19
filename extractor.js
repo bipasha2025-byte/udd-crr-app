@@ -125,58 +125,45 @@ function looksLikeLabel(str) {
  *   - Generic "name", "author", "prepared by" labels
  */
 function extractName(lines) {
-  // Mammoth renders UDD table cells as individual lines (no tabs).
-  // Structure is:
-  //   "CO-AUTHOR (DEV)  "   ← role label line
-  //   ""                    ← empty lines (up to 3)
-  //   "Developer"           ← function line  (skip)
-  //   ""
-  //   "Christian Khouri..."  ← NAME line  ← we want this
+  // The "name" field = the project/document name from the UDD cover page.
+  // UDD cover structure (mammoth line-by-line):
+  //   "unit detailed design"   OR  "user design document"
+  //   "SAP ECC/6.0"            ← SAP platform line
+  //   "GLIMS INTERFACE"        ← project name line 1   ← we want this
+  //   "PROCESS COA DATA REPLY" ← project name line 2   ← and this
   //
-  // Strategy 1: find "CO-AUTHOR (DEV)" label line, scan next ~10 lines for a name
-  for (let i = 0; i < lines.length; i++) {
-    const norm = normalizeLabel(lines[i]);
-    if (norm.includes('co-author') && norm.includes('dev')) {
-      // Look in next 1–10 lines for a real name (skip function labels like "Developer")
-      for (let j = i + 1; j < Math.min(i + 11, lines.length); j++) {
-        const candidate = lines[j].trim();
-        if (candidate && looksLikeName(candidate) && !isRoleLabel(candidate)) {
-          return candidate;
-        }
-      }
+  // Strategy 1: find "SAP ECC" line near the top, collect 1-2 non-empty lines after it
+  const sapEccIdx = findSapEccLine(lines);
+  if (sapEccIdx !== -1) {
+    const nameParts = [];
+    for (let j = sapEccIdx + 1; j < Math.min(sapEccIdx + 10, lines.length); j++) {
+      const t = lines[j].trim();
+      if (!t) continue;
+      // Stop when we hit a TOC entry or section header (has tab + number)
+      if (/\t\d+$/.test(t) || /^table of contents/i.test(t) || /^appendix/i.test(t)) break;
+      // Stop when we hit a known section keyword
+      if (/^(formal details|development|roles and|section|chapter|\d+\.)/i.test(t)) break;
+      nameParts.push(t);
+      if (nameParts.length >= 2) break; // collect at most 2 lines
     }
+    if (nameParts.length > 0) return nameParts.join('\n');
   }
 
-  // Strategy 2: find "AUTHOR (FC)" label → get name from next ~10 lines
-  for (let i = 0; i < lines.length; i++) {
-    const norm = normalizeLabel(lines[i]);
-    if ((norm === 'author (fc)' || norm.startsWith('author (fc)')) && !norm.includes('co-author')) {
-      for (let j = i + 1; j < Math.min(i + 11, lines.length); j++) {
-        const candidate = lines[j].trim();
-        if (candidate && looksLikeName(candidate) && !isRoleLabel(candidate)) {
-          return candidate;
-        }
-      }
-    }
-  }
-
-  // Strategy 3: tab-separated (some UDDs use tabs)
-  for (let i = 0; i < lines.length; i++) {
-    const parts = lines[i].trim().split(/\t+/);
-    if (parts.length >= 3) {
-      const first = normalizeLabel(parts[0]);
-      const lastName = parts[parts.length - 1].trim();
-      if (first === '' || first === 'function' || first.includes('plus user id')) continue;
-      if (first.includes('co-author') && looksLikeName(lastName)) return lastName;
-      if (first === 'author' || first.startsWith('author ') ) {
-        if (looksLikeName(lastName)) return lastName;
-      }
-    }
-  }
-
-  // Strategy 4: generic label search
+  // Strategy 2: generic label search (for colon-format UDDs)
   const candidates = ['name', 'author', 'prepared by', 'created by', 'document owner'];
   return findValueByLabels(lines, candidates, looksLikeName);
+}
+
+/**
+ * Find the line index of the "SAP ECC" platform line near the start of the UDD.
+ * Returns -1 if not found within the first 80 lines.
+ */
+function findSapEccLine(lines) {
+  for (let i = 0; i < Math.min(80, lines.length); i++) {
+    const t = lines[i].trim().toLowerCase();
+    if (t.startsWith('sap ecc') || t === 'sap ecc/6.0' || t === 'sap ecc 6.0') return i;
+  }
+  return -1;
 }
 
 /** Returns true if the string is a role/function label, not a person name */

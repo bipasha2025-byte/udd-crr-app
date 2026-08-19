@@ -385,16 +385,20 @@ function processParagraphs(xml, spec, injected) {
  * followed by non-blank paragraphs, and inject the name into that blank para.
  */
 function injectNameIntoCoverPage(docXml, name, injected) {
-  const encoded = encodeXmlEntities(name);
   let done = false;
+  // Name may be multi-line (e.g. "GLIMS INTERFACE\nPROCESS COA DATA REPLY")
+  const nameParts = name.split('\n').map(s => s.trim()).filter(Boolean);
 
-  // Find the first table row that has exactly 1 cell with multiple paragraphs
-  // where the first paragraph is blank
+  // Find the SECOND single-cell row (Row 1 = blank name row, Row 0 = title row)
+  let singleCellRowCount = 0;
   const result = docXml.replace(/(<w:tr[ >][\s\S]*?<\/w:tr>)/g, (rowXml) => {
     if (done) return rowXml;
 
     const cells = splitRowIntoCells(rowXml);
-    if (cells.length !== 1) return rowXml; // only single-cell rows (merged cover rows)
+    if (cells.length !== 1) return rowXml; // only merged single-cell rows
+
+    singleCellRowCount++;
+    if (singleCellRowCount !== 2) return rowXml; // skip Row 0 (title), target Row 1 (blank name row)
 
     // Get all paragraphs in the cell
     const paras = [];
@@ -403,48 +407,76 @@ function injectNameIntoCoverPage(docXml, name, injected) {
     while ((m = paraRe.exec(cells[0].xml)) !== null) {
       paras.push({ xml: m[1], index: m.index, length: m[1].length });
     }
+    if (paras.length === 0) return rowXml;
 
-    if (paras.length < 2) return rowXml; // need at least 2 paras (blank + content)
+    // Verify this row is currently blank (all paras have no text content)
+    const cellText = extractTextFromXml(cells[0].xml).trim();
+    if (cellText !== '') return rowXml; // already has content — skip
 
-    // First para must be blank, second must have content
-    const firstParaText = extractTextFromXml(paras[0].xml).trim();
-    const secondParaText = extractTextFromXml(paras[1].xml).trim();
+    // Copy paragraph properties (w:pPr) from first para to reuse formatting
+    const pPrMatch = paras[0].xml.match(/<w:pPr>[\s\S]*?<\/w:pPr>/);
+    const pPr = pPrMatch ? pPrMatch[0] : '';
 
-    if (firstParaText !== '' || secondParaText === '') return rowXml;
-
-    // Inject name into the first blank paragraph
-    // Replace or insert a <w:r><w:t> inside the first para
-    let newParaXml = paras[0].xml;
-    const hasRun = /<w:r[ >]/.test(newParaXml);
-
-    if (hasRun) {
-      // Replace first w:t content
-      let replaced = false;
-      newParaXml = newParaXml.replace(/<w:t([^>]*)>([^<]*)<\/w:t>/g, (full, attrs, inner) => {
-        if (!replaced) {
-          replaced = true;
-          const newAttrs = /xml:space/.test(attrs) ? attrs : attrs + ' xml:space="preserve"';
-          return `<w:t${newAttrs}>${encoded}</w:t>`;
+    // Build replacement paragraph(s): one per name line
+    let newParasXml = '';
+    for (let k = 0; k < nameParts.length; k++) {
+      const encoded = encodeXmlEntities(nameParts[k]);
+      if (k === 0 && paras[0]) {
+        // Reuse first existing para (preserves its formatting/properties)
+        let paraXml = paras[0].xml;
+        const hasRun = /<w:r[ >]/.test(paraXml);
+        if (hasRun) {
+          let replaced = false;
+          paraXml = paraXml.replace(/<w:t([^>]*)>[^<]*<\/w:t>/, (full, attrs) => {
+            if (!replaced) {
+              replaced = true;
+              return `<w:t xml:space="preserve">${encoded}</w:t>`;
+            }
+            return full;
+          });
+          if (!replaced) {
+            paraXml = paraXml.replace(/<\/w:r>/, `<w:t xml:space="preserve">${encoded}</w:t></w:r>`);
+          }
+        } else {
+          paraXml = paraXml.replace(/<\/w:p>/, `<w:r><w:t xml:space="preserve">${encoded}</w:t></w:r></w:p>`);
         }
-        return `<w:t${attrs}></w:t>`;
-      });
-      if (!replaced) {
-        // Insert before </w:r>
-        newParaXml = newParaXml.replace(/<\/w:r>/, `<w:t xml:space="preserve">${encoded}</w:t></w:r>`);
+        newParasXml += paraXml;
+      } else if (k < paras.length) {
+        // Reuse subsequent existing para
+        let paraXml = paras[k].xml;
+        const hasRun = /<w:r[ >]/.test(paraXml);
+        if (hasRun) {
+          let replaced = false;
+          paraXml = paraXml.replace(/<w:t([^>]*)>[^<]*<\/w:t>/, (full, attrs) => {
+            if (!replaced) { replaced = true; return `<w:t xml:space="preserve">${encoded}</w:t>`; }
+            return full;
+          });
+          if (!replaced) {
+            paraXml = paraXml.replace(/<\/w:r>/, `<w:t xml:space="preserve">${encoded}</w:t></w:r>`);
+          }
+        } else {
+          paraXml = paraXml.replace(/<\/w:p>/, `<w:r><w:t xml:space="preserve">${encoded}</w:t></w:r></w:p>`);
+        }
+        newParasXml += paraXml;
+      } else {
+        // Need an extra para — clone first para's pPr and add new run
+        newParasXml += `<w:p>${pPr}<w:r><w:t xml:space="preserve">${encoded}</w:t></w:r></w:p>`;
       }
-    } else {
-      // No run — insert before </w:p>
-      newParaXml = newParaXml.replace(/<\/w:p>/, `<w:r><w:t xml:space="preserve">${encoded}</w:t></w:r></w:p>`);
     }
 
-    // Rebuild cell with new first para
-    const newCellXml = cells[0].xml.substring(0, paras[0].index) +
-                       newParaXml +
-                       cells[0].xml.substring(paras[0].index + paras[0].length);
+    // Replace all paras in cell: used ones + any leftover blank paras
+    let rebuiltCellXml = cells[0].xml;
+    // Find the span of all paras in the cell and replace with new paras
+    const firstParaStart = paras[0].index;
+    const lastPara = paras[paras.length - 1];
+    const lastParaEnd = lastPara.index + lastPara.length;
+    rebuiltCellXml = rebuiltCellXml.substring(0, firstParaStart) +
+                     newParasXml +
+                     rebuiltCellXml.substring(lastParaEnd);
 
     done = true;
     injected.add('name');
-    return replaceCell(rowXml, cells[0], newCellXml);
+    return replaceCell(rowXml, cells[0], rebuiltCellXml);
   });
 
   return result;
