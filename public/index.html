@@ -391,7 +391,7 @@
       </table>
 
       <div class="btn-row">
-        <button class="btn btn-success btn-lg" id="btn-confirm">Confirm &amp; Generate CRR</button>
+        <button class="btn btn-success btn-lg" id="btn-confirm">Confirm &amp;amp; Generate CRR</button>
         <button class="btn btn-outline" id="btn-cancel">← Cancel &amp; Re-upload</button>
       </div>
     </div>
@@ -688,7 +688,7 @@
     } catch (e) {
       setWarn(previewWarnings, ['Network error during generation. Please try again.']);
     } finally {
-      setBtnLoading(btnConfirm, false, 'Confirm &amp; Generate CRR');
+      setBtnLoading(btnConfirm, false, 'Confirm & Generate CRR');
       btnCancel.disabled = false;
     }
   });
