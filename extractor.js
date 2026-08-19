@@ -118,32 +118,73 @@ function looksLikeLabel(str) {
 // ──────────────────────────────────────────────────────────────────────────────
 
 /**
- * Extract Name — must be a real person name, not a number or code.
- * Looks for "Name:", "Author:", "Prepared by:", etc. in the UDD header area.
- * Also handles the 3-column roles table: DEVELOPER row → NAME column.
+ * Extract Name — the author/developer name for the CRR first page.
+ * In UDD the name comes from:
+ *   - "CO-AUTHOR (DEV)" row (3-col table) → NAME column  (developer name)
+ *   - "AUTHOR (FC)" row → NAME column (functional consultant — fallback)
+ *   - Generic "name", "author", "prepared by" labels
  */
 function extractName(lines) {
-  // Strategy 1: look for explicit "name" label with a person-name value
-  const candidates = ['name', 'author', 'prepared by', 'created by', 'document owner'];
-  const val = findValueByLabels(lines, candidates, looksLikeName);
-  if (val) return val;
-
-  // Strategy 2: look for a row that has "DEVELOPER" label and a name-like value
-  // This handles CRR-style tables where the developer name is on the same row
+  // Mammoth renders UDD table cells as individual lines (no tabs).
+  // Structure is:
+  //   "CO-AUTHOR (DEV)  "   ← role label line
+  //   ""                    ← empty lines (up to 3)
+  //   "Developer"           ← function line  (skip)
+  //   ""
+  //   "Christian Khouri..."  ← NAME line  ← we want this
+  //
+  // Strategy 1: find "CO-AUTHOR (DEV)" label line, scan next ~10 lines for a name
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
-    const parts = line.split(/\t+/);
-    if (parts.length >= 2) {
-      const first = parts[0].trim().toLowerCase();
-      if (first === 'developer' || first === 'developer:') {
-        // Last column likely is the name
-        const last = parts[parts.length - 1].trim();
-        if (looksLikeName(last)) return last;
+    const norm = normalizeLabel(lines[i]);
+    if (norm.includes('co-author') && norm.includes('dev')) {
+      // Look in next 1–10 lines for a real name (skip function labels like "Developer")
+      for (let j = i + 1; j < Math.min(i + 11, lines.length); j++) {
+        const candidate = lines[j].trim();
+        if (candidate && looksLikeName(candidate) && !isRoleLabel(candidate)) {
+          return candidate;
+        }
       }
     }
   }
 
-  return null;
+  // Strategy 2: find "AUTHOR (FC)" label → get name from next ~10 lines
+  for (let i = 0; i < lines.length; i++) {
+    const norm = normalizeLabel(lines[i]);
+    if ((norm === 'author (fc)' || norm.startsWith('author (fc)')) && !norm.includes('co-author')) {
+      for (let j = i + 1; j < Math.min(i + 11, lines.length); j++) {
+        const candidate = lines[j].trim();
+        if (candidate && looksLikeName(candidate) && !isRoleLabel(candidate)) {
+          return candidate;
+        }
+      }
+    }
+  }
+
+  // Strategy 3: tab-separated (some UDDs use tabs)
+  for (let i = 0; i < lines.length; i++) {
+    const parts = lines[i].trim().split(/\t+/);
+    if (parts.length >= 3) {
+      const first = normalizeLabel(parts[0]);
+      const lastName = parts[parts.length - 1].trim();
+      if (first === '' || first === 'function' || first.includes('plus user id')) continue;
+      if (first.includes('co-author') && looksLikeName(lastName)) return lastName;
+      if (first === 'author' || first.startsWith('author ') ) {
+        if (looksLikeName(lastName)) return lastName;
+      }
+    }
+  }
+
+  // Strategy 4: generic label search
+  const candidates = ['name', 'author', 'prepared by', 'created by', 'document owner'];
+  return findValueByLabels(lines, candidates, looksLikeName);
+}
+
+/** Returns true if the string is a role/function label, not a person name */
+function isRoleLabel(str) {
+  const norm = normalizeLabel(str);
+  const roleLabels = ['developer', 'functional', 'coordinator', 'reviewer', 'guardian',
+                      'module owner', 'author', 'co-author', 'function', 'manager'];
+  return roleLabels.some(r => norm === r || norm.startsWith(r + ' '));
 }
 
 /**
@@ -235,22 +276,17 @@ function extractDevelopmentType(lines) {
  *   REVIEWER | Coordinator | Shamik Das (E633074)
  */
 function extractReviewer(lines) {
-  // Strategy 1: explicit label match
-  const candidates = ['reviewer', 'reviewed by', 'review by', 'code reviewer', 'technical reviewer'];
-
-  // First look for the 3-column table pattern: REVIEWER \t function \t name
+  // Strategy 1: 3-column table pattern: REVIEWER \t function \t name
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
     const parts = line.split(/\t+/);
     if (parts.length >= 3) {
       const roleCell = normalizeLabel(parts[0]);
       if (roleCell === 'reviewer') {
-        // parts[1] = function, parts[2] = name
         const name = parts[parts.length - 1].trim();
         if (looksLikeName(name)) return name;
       }
     }
-    // Also handle 2-column: REVIEWER \t name
     if (parts.length === 2) {
       const roleCell = normalizeLabel(parts[0]);
       if (roleCell === 'reviewer') {
@@ -260,6 +296,25 @@ function extractReviewer(lines) {
     }
   }
 
+  // Strategy 2: line-by-line mammoth format — find "REVIEWED BY (CO)" in roles section
+  // Structure: "REVIEWED BY (CO)" → empty lines → function value → empty → name
+  const rolesStart = findRolesSectionStart(lines);
+  const searchStart = rolesStart !== -1 ? rolesStart : 0;
+  for (let i = searchStart; i < lines.length; i++) {
+    const norm = normalizeLabel(lines[i]);
+    if (norm.includes('reviewed by') || norm === 'reviewer') {
+      // Skip function value lines; find the name (skip "Reviewer", "Coordinator" etc.)
+      for (let j = i + 1; j < Math.min(i + 11, lines.length); j++) {
+        const candidate = lines[j].trim();
+        if (candidate && looksLikeName(candidate) && !isRoleLabel(candidate)) {
+          return candidate;
+        }
+      }
+    }
+  }
+
+  // Strategy 3: generic label search
+  const candidates = ['reviewer', 'reviewed by', 'review by', 'code reviewer', 'technical reviewer'];
   return findValueByLabels(lines, candidates, looksLikeName);
 }
 
@@ -284,21 +339,26 @@ function extractDeveloperFunction(lines) {
     }
   }
 
-  // Strategy 2: explicit label
-  const candidates = ['developer function', 'function', 'developer role', 'role', 'designation', 'job title', 'position'];
-
-  // Look specifically in DEVELOPER row context
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim().toLowerCase();
-    if (line.includes('developer')) {
-      const colonIdx = lines[i].indexOf(':');
-      if (colonIdx !== -1) {
-        const val = lines[i].substring(colonIdx + 1).trim();
-        if (looksLikeFunctionValue(val)) return val;
+  // Strategy 2: line-by-line mammoth format — find CO-AUTHOR (DEV) label in roles section.
+  // Structure: "CO-AUTHOR (DEV)" → empty lines → function value → empty → name
+  const rolesStart = findRolesSectionStart(lines);
+  if (rolesStart !== -1) {
+    for (let i = rolesStart; i < lines.length; i++) {
+      const norm = normalizeLabel(lines[i]);
+      if (norm.includes('co-author') && norm.includes('dev')) {
+        // First non-empty, non-role-label value is the function
+        for (let j = i + 1; j < Math.min(i + 11, lines.length); j++) {
+          const candidate = lines[j].trim();
+          if (!candidate) continue;
+          if (isRoleLabelStrict(candidate) && !looksLikeFunctionValue(candidate)) break;
+          if (looksLikeFunctionValue(candidate)) return candidate;
+        }
       }
     }
   }
 
+  // Strategy 3: generic label fallback (handles "Developer Function: value" and tab formats)
+  const candidates = ['developer function', 'function', 'developer role', 'designation', 'job title', 'position'];
   return findValueByLabels(lines, candidates, looksLikeFunctionValue);
 }
 
@@ -330,31 +390,51 @@ function extractDeveloperName(lines) {
     }
   }
 
-  // Strategy 2: explicit label
-  const candidates = ['developer name', 'developer', 'developed by', 'programmer', 'abap developer'];
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
-    const lineLow = line.toLowerCase();
-    if (lineLow.includes('developer') && lineLow.includes('name')) {
-      const colonIdx = line.indexOf(':');
-      if (colonIdx !== -1) {
-        const val = line.substring(colonIdx + 1).trim();
-        if (looksLikeName(val)) return val;
-      }
-      const parts = line.split(/\t+/);
-      if (parts.length >= 2) {
-        const val = parts[parts.length - 1].trim();
-        if (looksLikeName(val)) return val;
-      }
-      for (let j = i + 1; j < Math.min(i + 3, lines.length); j++) {
-        const next = lines[j].trim();
-        if (next && !isPlaceholder(next) && !looksLikeLabel(next) && looksLikeName(next)) return next;
+  // Strategy 2: line-by-line mammoth format — find CO-AUTHOR (DEV) in roles section
+  const rolesStart2 = findRolesSectionStart(lines);
+  if (rolesStart2 !== -1) {
+    for (let i = rolesStart2; i < lines.length; i++) {
+      const norm = normalizeLabel(lines[i]);
+      if (norm.includes('co-author') && norm.includes('dev')) {
+        // Skip next lines until we find a name (not a role/function label)
+        for (let j = i + 1; j < Math.min(i + 11, lines.length); j++) {
+          const candidate = lines[j].trim();
+          if (candidate && looksLikeName(candidate) && !isRoleLabel(candidate)) {
+            return candidate;
+          }
+        }
       }
     }
   }
 
+  // Strategy 3: generic label fallback (handles "Developer Name: value" and tab formats)
+  const candidates = ['developer name', 'developer', 'developed by', 'programmer', 'abap developer'];
   return findValueByLabels(lines, candidates, looksLikeName);
+}
+
+/**
+ * Find the line index where the "Roles and responsibilities" section starts.
+ * Returns -1 if not found.
+ */
+function findRolesSectionStart(lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const norm = normalizeLabel(lines[i]);
+    if (norm === 'roles and responsibilities' || norm === 'roles and responsibility' ||
+        norm === '1.2 roles and responsibilities' || norm === '1.2 roles and responsibility') {
+      return i;
+    }
+  }
+  return -1;
+}
+
+/**
+ * Stricter role label check — exact match only (for loop termination)
+ */
+function isRoleLabelStrict(str) {
+  const norm = normalizeLabel(str);
+  const strict = ['reviewer', 'developer', 'module owner', 'guardian', 'author (fc)',
+                  'co-author (dev)', 'reviewed by (co)', 'function', 'name'];
+  return strict.some(r => norm === r || norm.startsWith(r + ' (') || norm === r.replace(' ', '-'));
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

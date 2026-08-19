@@ -372,6 +372,85 @@ function processParagraphs(xml, spec, injected) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// Cover page name injection
+// ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The CRR cover page has a table where row 1 contains:
+ *   Para 0: "" (blank) ← name goes here
+ *   Para 1: "GLIMS INTERFACE"
+ *   Para 2: "PROCESS COA DATA REPLY"
+ *
+ * We find the first <w:tr> whose single cell has a blank first paragraph
+ * followed by non-blank paragraphs, and inject the name into that blank para.
+ */
+function injectNameIntoCoverPage(docXml, name, injected) {
+  const encoded = encodeXmlEntities(name);
+  let done = false;
+
+  // Find the first table row that has exactly 1 cell with multiple paragraphs
+  // where the first paragraph is blank
+  const result = docXml.replace(/(<w:tr[ >][\s\S]*?<\/w:tr>)/g, (rowXml) => {
+    if (done) return rowXml;
+
+    const cells = splitRowIntoCells(rowXml);
+    if (cells.length !== 1) return rowXml; // only single-cell rows (merged cover rows)
+
+    // Get all paragraphs in the cell
+    const paras = [];
+    const paraRe = /(<w:p[ >][\s\S]*?<\/w:p>)/g;
+    let m;
+    while ((m = paraRe.exec(cells[0].xml)) !== null) {
+      paras.push({ xml: m[1], index: m.index, length: m[1].length });
+    }
+
+    if (paras.length < 2) return rowXml; // need at least 2 paras (blank + content)
+
+    // First para must be blank, second must have content
+    const firstParaText = extractTextFromXml(paras[0].xml).trim();
+    const secondParaText = extractTextFromXml(paras[1].xml).trim();
+
+    if (firstParaText !== '' || secondParaText === '') return rowXml;
+
+    // Inject name into the first blank paragraph
+    // Replace or insert a <w:r><w:t> inside the first para
+    let newParaXml = paras[0].xml;
+    const hasRun = /<w:r[ >]/.test(newParaXml);
+
+    if (hasRun) {
+      // Replace first w:t content
+      let replaced = false;
+      newParaXml = newParaXml.replace(/<w:t([^>]*)>([^<]*)<\/w:t>/g, (full, attrs, inner) => {
+        if (!replaced) {
+          replaced = true;
+          const newAttrs = /xml:space/.test(attrs) ? attrs : attrs + ' xml:space="preserve"';
+          return `<w:t${newAttrs}>${encoded}</w:t>`;
+        }
+        return `<w:t${attrs}></w:t>`;
+      });
+      if (!replaced) {
+        // Insert before </w:r>
+        newParaXml = newParaXml.replace(/<\/w:r>/, `<w:t xml:space="preserve">${encoded}</w:t></w:r>`);
+      }
+    } else {
+      // No run — insert before </w:p>
+      newParaXml = newParaXml.replace(/<\/w:p>/, `<w:r><w:t xml:space="preserve">${encoded}</w:t></w:r></w:p>`);
+    }
+
+    // Rebuild cell with new first para
+    const newCellXml = cells[0].xml.substring(0, paras[0].index) +
+                       newParaXml +
+                       cells[0].xml.substring(paras[0].index + paras[0].length);
+
+    done = true;
+    injected.add('name');
+    return replaceCell(rowXml, cells[0], newCellXml);
+  });
+
+  return result;
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Main population entry point
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -390,20 +469,23 @@ function populateCRR(crrBuffer, fields) {
   // ── Process main document body ────────────────────────────────────────────
   let docXml = zip.file('word/document.xml').asText();
 
+  // ── Special case: inject name into blank first paragraph of cover page row 1 ─
+  // The CRR cover page row 1 has paragraphs: [blank][GLIMS INTERFACE][PROCESS COA...]
+  // The name goes into that first blank paragraph.
+  if (fields.name) {
+    docXml = injectNameIntoCoverPage(docXml, fields.name, injected);
+  }
+
   // Pass 1: table rows — only process until all fields are injected
   // We track row index to avoid matching checklist rows deep in the document
   let rowIndex = 0;
   docXml = docXml.replace(/(<w:tr[ >][\s\S]*?<\/w:tr>)/g, (rowXml) => {
     const currentRow = rowIndex++;
-    // All target fields are in rows 0-15 (sections 1.1 and 1.2)
-    // Once all specs are injected, stop processing
     if (injected.size >= specs.length) return rowXml;
-    // Only process rows in the first part of the document (rows 0-20 cover all header sections)
-    // Beyond row 20, only process if we still have role rows to inject
     const hasRoleRowsLeft = specs.some(s => s.isRoleRow && !injected.has(s.id) && s.value);
     const hasNonRoleLeft = specs.some(s => !s.isRoleRow && !injected.has(s.id) && s.value);
     if (currentRow > 20 && !hasRoleRowsLeft && !hasNonRoleLeft) return rowXml;
-    if (currentRow > 50) return rowXml; // hard stop — all target fields found by now
+    if (currentRow > 50) return rowXml;
     for (const spec of specs) {
       if (!spec.value || injected.has(spec.id)) continue;
       const result = processTableRow(rowXml, spec, injected);
