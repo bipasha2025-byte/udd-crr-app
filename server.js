@@ -8,6 +8,19 @@ const fse = require('fs-extra');
 const mammoth = require('mammoth');
 const { v4: uuidv4 } = require('uuid');
 
+/**
+ * Returns today's date formatted as DD-Mon-YYYY (e.g. "15-Jun-2025").
+ * This is always later than any UDD creation date from the past.
+ */
+function todayFormatted() {
+  const now = new Date();
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const dd = String(now.getDate()).padStart(2, '0');
+  const mon = months[now.getMonth()];
+  const yyyy = now.getFullYear();
+  return `${dd}-${mon}-${yyyy}`;
+}
+
 const { extractFieldsFromUDD, validateExtraction } = require('./extractor');
 const { populateCRR } = require('./populator');
 
@@ -201,6 +214,9 @@ app.post('/api/generate', express.json(), async (req, res) => {
     } catch (e) {
       return res.status(500).json({ error: 'CRR template file is no longer available. Please re-upload.' });
     }
+
+    // Inject CRR Creation Date = today's date (always later than the UDD creation date)
+    finalFields.crrCreationDate = todayFormatted();
 
     // Generate populated CRR
     let outputBuffer;

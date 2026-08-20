@@ -64,9 +64,15 @@ function buildFieldSpecs(fields) {
       value: fields.crrTitle,
     },
     {
+      id: 'crrCreationDate',
+      // CRR section 1.1 "CRR Creation date" → today's date (always later than UDD creation date)
+      labels: ['crr creation date'],
+      value: fields.crrCreationDate,
+    },
+    {
       id: 'uddCreationDate',
-      // CRR section 1.1 uses "CRR Creation date" label — map UDD creation date to it
-      labels: ['udd creation date', 'crr creation date', 'creation date', 'document creation date', 'date of creation', 'date created', 'created date'],
+      // CRR section 1.1 "UDD Creation date" → copied exactly from UDD
+      labels: ['udd creation date', 'udd creation', 'creation date', 'document creation date', 'date of creation', 'date created', 'created date'],
       value: fields.uddCreationDate,
     },
     {
