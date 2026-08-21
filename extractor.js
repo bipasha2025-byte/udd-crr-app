@@ -425,6 +425,189 @@ function isRoleLabelStrict(str) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// Section 4 field extractors (new)
+// ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Find the line index of "System Components" section (UDD 7.2).
+ * Searches within a reasonable range, not the whole doc.
+ */
+function findSystemComponentsStart(lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const norm = normalizeLabel(lines[i]);
+    if (norm === 'system components' || norm === '7.2 system components' ||
+        norm === '7.2. system components') return i;
+  }
+  return -1;
+}
+
+/**
+ * Extract a labelled value from the System Components section.
+ * Structure (mammoth line-by-line):
+ *   "R/3 Version:"   ← label line (may include colon)
+ *   "SAP ECC 6.0"    ← value line
+ */
+function extractFromSystemComponents(lines, labelPattern, allowNA) {
+  const sysStart = findSystemComponentsStart(lines);
+  if (sysStart === -1) return null;
+  // Search within 60 lines of the section heading
+  for (let i = sysStart; i < Math.min(sysStart + 60, lines.length); i++) {
+    const norm = normalizeLabel(lines[i]);
+    if (labelPattern.test(norm)) {
+      // Value may be on same line after colon, or on next non-empty line
+      const colonIdx = lines[i].indexOf(':');
+      if (colonIdx !== -1) {
+        const inline = lines[i].substring(colonIdx + 1).trim();
+        // allowNA = treat "N/A" as valid (e.g. Legacy System: N/A)
+        if (inline && (allowNA || !isPlaceholder(inline))) return inline;
+      }
+      // Look at next 1-4 lines
+      for (let j = i + 1; j < Math.min(i + 5, lines.length); j++) {
+        const t = lines[j].trim();
+        if (t && (allowNA || !isPlaceholder(t)) && !looksLikeLabel(t)) return t;
+      }
+    }
+  }
+  return null;
+}
+
+/** Extract R/3 Version from UDD section 7.2 */
+function extractR3Version(lines) {
+  return extractFromSystemComponents(lines, /r[\s\/]?3\s*version/i) ||
+         findValueByLabels(lines, ['r/3 version', 'r3 version', 'sap version'], null);
+}
+
+/** Extract Source System from UDD section 7.2 */
+function extractSourceSystem(lines) {
+  return extractFromSystemComponents(lines, /source\s*system/i) ||
+         findValueByLabels(lines, ['source system'], null);
+}
+
+/** Extract Legacy System from UDD section 7.2 */
+function extractLegacySystem(lines) {
+  // "N/A" IS a valid legacy system value — don't treat as placeholder here
+  return extractFromSystemComponents(lines, /legacy\s*system/i, true) ||
+         findValueByLabels(lines, ['legacy system'], null);
+}
+
+/**
+ * Find the ACTUAL Appendix 1 / Revision Log section start (not the TOC reference).
+ * We require that "DOCUMENT VERSION" or "DATE OF THE CHANGE" header appears
+ * within 30 lines after the match — this distinguishes the real section from TOC.
+ */
+function findRevisionLogStart(lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i].trim();
+    if (/appendix\s*1.*revision\s*log/i.test(t) || /^revision\s*log$/i.test(t)) {
+      // Verify this is the actual section (has header within 30 lines)
+      for (let j = i + 1; j < Math.min(i + 30, lines.length); j++) {
+        if (/document version/i.test(lines[j]) || /date of the change/i.test(lines[j])) return i;
+      }
+    }
+  }
+  return -1;
+}
+
+/**
+ * Parse the revision log into entries.
+ * Each entry is keyed by columns: version, date, reasons, transport, etc.
+ * Returns array of { version, date, reasons, projectName, crqNumbers[] }
+ */
+function parseRevisionLog(lines) {
+  const revStart = findRevisionLogStart(lines);
+  if (revStart === -1) return [];
+
+  // Find header row (DOCUMENT VERSION / DATE OF THE CHANGE / REASONS OF THE CHANGE)
+  let headerIdx = -1;
+  for (let i = revStart; i < Math.min(revStart + 20, lines.length); i++) {
+    if (/document version/i.test(lines[i])) { headerIdx = i; break; }
+  }
+  if (headerIdx === -1) return [];
+
+  // Collect all non-empty lines after header — the table is rendered cell-by-cell
+  const dataLines = [];
+  for (let i = headerIdx + 1; i < lines.length; i++) {
+    const t = lines[i].trim();
+    if (t) dataLines.push(t);
+  }
+
+  // The revision log table columns (mammoth line order): version, date, reasons, transport, (dates/authors)
+  // Entries are separated by version numbers like "01", "02", "03", "04"
+  const entries = [];
+  let current = null;
+
+  for (let i = 0; i < dataLines.length; i++) {
+    const t = dataLines[i];
+    // Detect version number (1-2 digit number alone, possibly like "01", "02", "03")
+    if (/^\d{1,2}$/.test(t) && i + 1 < dataLines.length) {
+      // Save previous entry
+      if (current) entries.push(current);
+      current = { version: t, date: null, reasons: null, projectName: null, crqNumbers: [] };
+      continue;
+    }
+    if (!current) continue;
+
+    // Date — looks like a date and no date recorded yet
+    if (!current.date && looksLikeDateStr(t)) {
+      current.date = t;
+      continue;
+    }
+
+    // CRQ numbers — extract any CRQ patterns in this line
+    const crqMatches = t.match(/CRQ\s*\d{6,}/gi) || t.match(/CRQ\d+/gi) || [];
+    for (const crq of crqMatches) {
+      const norm = crq.replace(/\s+/g, '').toUpperCase();
+      if (!current.crqNumbers.includes(norm)) current.crqNumbers.push(norm);
+    }
+
+    // Project name — a descriptive text line that isn't a date, transport, or CRQ number alone
+    // Typically looks like "SAP PE1: InfleXio (INFL_QM_42) - GLIMS Additional Fields..."
+    if (!current.projectName && t.length > 10 && !/^DE1K|^AE1K|^PE1K|^[A-Z]{2,3}K\d/i.test(t) &&
+        !looksLikeDateStr(t) && !/^\d{1,2}$/.test(t) &&
+        !(/^(end|begin|start)\s*of\s*crq/i.test(t))) {
+      // Likely a project/reason description
+      if (crqMatches.length === 0 && /[a-zA-Z]{3}/.test(t)) {
+        current.projectName = t;
+      }
+    }
+  }
+  if (current) entries.push(current);
+  return entries;
+}
+
+function looksLikeDateStr(str) {
+  return /\d/.test(str) && (
+    /\d{1,2}[\-\.\/]\w+[\-\.\/]\d{2,4}/.test(str) ||
+    /\d{4}[\-\.\/]\d{1,2}[\-\.\/]\d{1,2}/.test(str) ||
+    /\d{1,2}[\-\s]\w{3,}[\-\s]\d{2,4}/i.test(str)
+  );
+}
+
+/**
+ * Extract CRQ Number — from the latest (highest version) revision log entry.
+ * If multiple CRQs found in latest entry, return the most prominent one.
+ */
+function extractCRQNumber(lines) {
+  const entries = parseRevisionLog(lines);
+  if (entries.length === 0) return null;
+  // Use the last entry (latest revision)
+  const latest = entries[entries.length - 1];
+  if (latest.crqNumbers.length === 0) return null;
+  // Return the first (most prominent) CRQ from the latest entry
+  return latest.crqNumbers[0];
+}
+
+/**
+ * Extract Project Name — from the latest revision log entry.
+ */
+function extractProjectName(lines) {
+  const entries = parseRevisionLog(lines);
+  if (entries.length === 0) return null;
+  const latest = entries[entries.length - 1];
+  return latest.projectName || null;
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Main extraction function
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -435,24 +618,41 @@ function isRoleLabelStrict(str) {
 function extractFieldsFromUDD(rawText) {
   const lines = rawText.split('\n');
 
-  const name            = extractName(lines);
-  const crrTitle        = extractCRRTitle(lines);
-  const uddCreationDate = extractUDDCreationDate(lines);
-  const developmentType = extractDevelopmentType(lines);
-  const reviewer        = extractReviewer(lines);
+  const name              = extractName(lines);
+  const crrTitle          = extractCRRTitle(lines);
+  const uddCreationDate   = extractUDDCreationDate(lines);
+  const developmentType   = extractDevelopmentType(lines);
+  const reviewer          = extractReviewer(lines);
   const developerFunction = extractDeveloperFunction(lines);
-  const developerName   = extractDeveloperName(lines);
+  const developerName     = extractDeveloperName(lines);
 
-  return { name, crrTitle, uddCreationDate, developmentType, reviewer, developerFunction, developerName };
+  // Section 4 — REPOSITORY OBJECTS
+  const r3Version     = extractR3Version(lines);
+  const sourceSystem  = extractSourceSystem(lines);
+  const legacySystem  = extractLegacySystem(lines);
+  const crqNumber     = extractCRQNumber(lines);
+  const projectName   = extractProjectName(lines);
+  // relatedUDDName is injected by server.js from the uploaded filename
+  // sopConventions and devLanguage are fixed values — populated in populator.js
+
+  return {
+    name, crrTitle, uddCreationDate, developmentType,
+    reviewer, developerFunction, developerName,
+    r3Version, sourceSystem, legacySystem,
+    crqNumber, projectName,
+  };
 }
 
 /**
  * Validate extraction results.
  * Returns an array of error strings (empty = all good).
+ * Section 4 fields (r3Version, sourceSystem, legacySystem, crqNumber, projectName)
+ * are optional — missing ones are flagged as warnings, not hard errors.
  */
 function validateExtraction(fields) {
   const errors = [];
-  const fieldNames = {
+  // Required fields (hard errors)
+  const required = {
     name:             'Name',
     crrTitle:         'CRR Document Title',
     uddCreationDate:  'UDD Creation Date',
@@ -461,7 +661,7 @@ function validateExtraction(fields) {
     developerFunction:'Developer Function',
     developerName:    'Developer Name',
   };
-  for (const [key, label] of Object.entries(fieldNames)) {
+  for (const [key, label] of Object.entries(required)) {
     if (!fields[key]) {
       errors.push(`"${label}" could not be identified in the uploaded UDD.`);
     }

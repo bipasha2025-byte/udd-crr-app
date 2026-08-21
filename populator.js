@@ -98,6 +98,54 @@ function buildFieldSpecs(fields) {
       isRoleRow: true,
       roleFunction: 'Developer',        // always hardcoded — never from UDD
     },
+    // ── Section 4: REPOSITORY OBJECTS ─────────────────────────────────────────
+    {
+      id: 'r3Version',
+      // UDD 7.2 System Components → R/3 Version (direct copy, no transformation)
+      labels: ['r/3 version', 'r3 version', 'r/3 version:'],
+      value: fields.r3Version,
+    },
+    {
+      id: 'sourceSystem',
+      // UDD 7.2 System Components → Source System (direct copy)
+      labels: ['source system', 'source system:'],
+      value: fields.sourceSystem,
+    },
+    {
+      id: 'legacySystem',
+      // UDD 7.2 System Components → Legacy System (direct copy)
+      labels: ['legacy system', 'legacy system:'],
+      value: fields.legacySystem,
+    },
+    {
+      id: 'relatedUDDName',
+      // Name/identifier of the uploaded UDD file (injected by server.js)
+      // "Related Unit Detailed Design" is the exact CRR Section 4 label for this field
+      labels: ['related unit detailed design', 'related udd name', 'related udd', 'udd name', 'udd document'],
+      value: fields.relatedUDDName,
+    },
+    {
+      id: 'sopConventions',
+      // Always fixed: SOP-0011365
+      labels: ['standard or language specific conventions used', 'standard or language specific conventions',
+               'conventions used', 'sop conventions', 'language specific conventions'],
+      value: 'SOP-0011365',
+    },
+    {
+      id: 'devLanguage',
+      // Always fixed: ABAP
+      labels: ['development language used', 'development language', 'language used', 'dev language'],
+      value: 'ABAP',
+    },
+    {
+      id: 'crqNumber',
+      // UDD Appendix 1 Revision Log → latest CRQ number
+      labels: ['crq number and project name', 'crq number', 'crq no', 'crq'],
+      value: fields.crqNumber && fields.projectName
+        ? `${fields.projectName}\n${fields.crqNumber}`
+        : (fields.crqNumber || fields.projectName || null),
+      isMultiPara: true,  // CRQ cell has multiple paragraphs in CRR
+    },
   ];
 }
 
@@ -152,6 +200,53 @@ function injectValueIntoCell(cellXml, value) {
       `<w:p><w:r><w:t xml:space="preserve">${encoded}</w:t></w:r></w:p></w:tc>`);
   }
   return result;
+}
+
+/**
+ * Inject multi-line value into a cell — one line per existing paragraph.
+ * If there are fewer paragraphs than lines, extra lines are appended as new paras.
+ * value is a string with '\n'-separated parts.
+ */
+function injectMultiParaIntoCell(cellXml, value) {
+  const parts = value.split('\n').map(s => s.trim()).filter(Boolean);
+  if (parts.length <= 1) return injectValueIntoCell(cellXml, parts[0] || value);
+
+  const paraRe = /(<w:p[ >][\s\S]*?<\/w:p>)/g;
+  const paras = [];
+  let m;
+  while ((m = paraRe.exec(cellXml)) !== null) {
+    paras.push({ xml: m[1], index: m.index, length: m[1].length });
+  }
+  if (paras.length === 0) return injectValueIntoCell(cellXml, parts.join(' '));
+
+  // Get pPr from first para for cloning
+  const pPrMatch = paras[0].xml.match(/<w:pPr>[\s\S]*?<\/w:pPr>/);
+  const pPr = pPrMatch ? pPrMatch[0] : '';
+
+  let newParasXml = '';
+  for (let k = 0; k < parts.length; k++) {
+    const encoded = encodeXmlEntities(parts[k]);
+    if (k < paras.length) {
+      // Reuse existing para — replace/insert its text
+      let paraXml = paras[k].xml;
+      let replaced = false;
+      paraXml = paraXml.replace(/<w:t([^>]*)>[^<]*<\/w:t>/, (full, attrs) => {
+        replaced = true;
+        return `<w:t xml:space="preserve">${encoded}</w:t>`;
+      });
+      if (!replaced) {
+        paraXml = paraXml.replace(/<\/w:p>/, `<w:r><w:t xml:space="preserve">${encoded}</w:t></w:r></w:p>`);
+      }
+      newParasXml += paraXml;
+    } else {
+      newParasXml += `<w:p>${pPr}<w:r><w:t xml:space="preserve">${encoded}</w:t></w:r></w:p>`;
+    }
+  }
+
+  // Replace paras span in cellXml
+  const firstStart = paras[0].index;
+  const lastEnd = paras[paras.length - 1].index + paras[paras.length - 1].length;
+  return cellXml.substring(0, firstStart) + newParasXml + cellXml.substring(lastEnd);
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -252,7 +347,19 @@ function processTableRow(rowXml, spec, injected) {
       return { modified: true, xml: newRowXml };
     }
 
-    // ── Standard: same cell has "Label: " with blank after colon ─────────────
+    // Choose injector based on isMultiPara flag
+    const injector = spec.isMultiPara
+      ? (cellXml, val) => injectMultiParaIntoCell(cellXml, val)
+      : injectValueIntoCell;
+
+    // ── If a next cell exists, ALWAYS inject into it (not into the label cell)
+    //    This handles 2-cell [Label:] [Value] rows correctly even when label has a colon.
+    if (i + 1 < cells.length) {
+      injected.add(spec.id);
+      return { modified: true, xml: replaceCell(rowXml, cells[i + 1], injector(cells[i + 1].xml, spec.value)) };
+    }
+
+    // ── Single-cell row: label and value are in the same cell (Label: ___)  ────
     const rawText = cellTexts[i];
     const colonPos = rawText.indexOf(':');
     if (colonPos !== -1) {
@@ -262,24 +369,6 @@ function processTableRow(rowXml, spec, injected) {
         injected.add(spec.id);
         return { modified: true, xml: replaceCell(rowXml, cells[i], newCellXml) };
       }
-    }
-
-    // ── Next cell blank ────────────────────────────────────────────────────────
-    if (i + 1 < cells.length && isCellBlank(cells[i + 1].xml)) {
-      injected.add(spec.id);
-      return { modified: true, xml: replaceCell(rowXml, cells[i + 1], injectValueIntoCell(cells[i + 1].xml, spec.value)) };
-    }
-
-    // ── Two cells away blank ───────────────────────────────────────────────────
-    if (i + 2 < cells.length && isCellBlank(cells[i + 2].xml)) {
-      injected.add(spec.id);
-      return { modified: true, xml: replaceCell(rowXml, cells[i + 2], injectValueIntoCell(cells[i + 2].xml, spec.value)) };
-    }
-
-    // ── Non-blank next cell — overwrite it (for populated templates) ───────────
-    if (i + 1 < cells.length) {
-      injected.add(spec.id);
-      return { modified: true, xml: replaceCell(rowXml, cells[i + 1], injectValueIntoCell(cells[i + 1].xml, spec.value)) };
     }
   }
 

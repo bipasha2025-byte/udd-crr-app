@@ -21,6 +21,20 @@ function todayFormatted() {
   return `${dd}-${mon}-${yyyy}`;
 }
 
+/**
+ * Trim a UDD filename to include only up to the first 4-digit number segment.
+ * Nothing after the 4-digit number is kept.
+ * e.g. "UDD-SAPECC-QM-1609-04" → "UDD-SAPECC-QM-1609"
+ *      "UDD-SAP-MM-2024-01"    → "UDD-SAP-MM-2024"
+ *      "UDD-SAPECC-QM-1609"    → "UDD-SAPECC-QM-1609"  (no change needed)
+ * If no 4-digit segment is found, returns the name unchanged.
+ */
+function trimToFourDigitNumber(name) {
+  // Match up to and including the first 4-digit number in the string
+  const match = name.match(/^(.*?\d{4})/);
+  return match ? match[1] : name;
+}
+
 const { extractFieldsFromUDD, validateExtraction } = require('./extractor');
 const { populateCRR } = require('./populator');
 
@@ -145,6 +159,13 @@ app.post(
       const fields = extractFieldsFromUDD(uddText);
       const errors = validateExtraction(fields);
 
+      // Derive relatedUDDName from the original UDD filename (strip extension).
+      // Trim to only up to the first 4-digit number segment, nothing after it.
+      // e.g. "UDD-SAPECC-QM-1609-04.docx" → "UDD-SAPECC-QM-1609"
+      //      "UDD-SAP-MM-2024-01.docx"    → "UDD-SAP-MM-2024"
+      const uddBaseName = path.basename(uddFile.originalname, path.extname(uddFile.originalname));
+      fields.relatedUDDName = trimToFourDigitNumber(uddBaseName);
+
       // Create session
       const sessionId = uuidv4();
       sessions.set(sessionId, {
@@ -198,8 +219,9 @@ app.post('/api/generate', express.json(), async (req, res) => {
 
     const sess = getSession(sessionId);
 
-    // Use confirmed fields (user may have corrected values)
-    const finalFields = fields || sess.extractedFields;
+    // Merge: start from session's extracted fields (contains server-injected values like relatedUDDName),
+    // then overlay any user-confirmed edits on top
+    const finalFields = Object.assign({}, sess.extractedFields, fields || {});
 
     // Validate all required fields are present
     const errors = validateExtraction(finalFields);
