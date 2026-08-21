@@ -578,6 +578,120 @@ function injectNameIntoCoverPage(docXml, name, injected) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// Copied Objects table injection
+// ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Inject app components as rows into the "Copied objects" table in the CRR.
+ *
+ * The CRR table structure:
+ *   Header row: [ "Name of Object" | "Object Type" | "Code Version" | "Comment" ]
+ *   Data rows:  one row per object (may already have pre-filled rows from the CRR template)
+ *
+ * Strategy:
+ *   1. Find the header row by its label text (case-insensitive).
+ *   2. Collect all existing data rows immediately following the header row.
+ *   3. Replace those data rows with newly generated rows from fields.appComponents.
+ *   4. If no components, leave the header row + one blank data row.
+ *
+ * @param {string} docXml        - word/document.xml content
+ * @param {Array}  appComponents - array of { name, objectType, codeVersion, comment }
+ * @returns {string} modified docXml
+ */
+function injectCopiedObjectsTable(docXml, appComponents) {
+  if (!appComponents || appComponents.length === 0) return docXml;
+
+  // ── Step 1: Split the XML into rows ─────────────────────────────────────────
+  // We operate on the full docXml, collecting all <w:tr>…</w:tr> matches
+  // with their positions, so we can do a targeted splice.
+  const rowRe = /(<w:tr[ >][\s\S]*?<\/w:tr>)/g;
+  const allRows = [];
+  let m;
+  while ((m = rowRe.exec(docXml)) !== null) {
+    allRows.push({ xml: m[1], index: m.index, length: m[1].length });
+  }
+
+  // ── Step 2: Find the header row ──────────────────────────────────────────────
+  let headerRowIdx = -1;
+  for (let i = 0; i < allRows.length; i++) {
+    const text = extractTextFromXml(allRows[i].xml).replace(/\s+/g, ' ').toLowerCase();
+    if (text.includes('name of object') && text.includes('object type')) {
+      headerRowIdx = i;
+      break;
+    }
+  }
+  if (headerRowIdx === -1) return docXml; // header not found — leave unchanged
+
+  const headerRow = allRows[headerRowIdx];
+
+  // ── Step 3: Identify how many existing data rows follow the header ───────────
+  // A data row in the copied objects table has 4 cells and is NOT the header itself.
+  // We stop when we hit a row that belongs to a different table section (different label pattern).
+  let dataRowStart = headerRowIdx + 1;
+  let dataRowEnd   = dataRowStart; // exclusive
+  for (let i = dataRowStart; i < allRows.length; i++) {
+    const cells = splitRowIntoCells(allRows[i].xml);
+    if (cells.length !== 4) break; // different row structure — end of this table block
+    const rowText = extractTextFromXml(allRows[i].xml).replace(/\s+/g, ' ').toLowerCase();
+    // Stop if this looks like another section header (has bold label keywords)
+    if (rowText.includes('name of object') && rowText.includes('object type')) break;
+    dataRowEnd = i + 1;
+  }
+
+  // ── Step 4: Build a template cell from the header row ────────────────────────
+  // We derive the cell template by stripping text from a header cell so we reuse
+  // font, border, padding, and table-cell property (tcPr) XML from the CRR itself.
+  const headerCells = splitRowIntoCells(headerRow.xml);
+  if (headerCells.length < 4) return docXml; // unexpected structure
+
+  // Build a blank data cell template — preserve tcPr (cell properties) but clear text
+  function buildDataCell(templateCellXml, value) {
+    // Extract tcPr (cell-level properties) to preserve borders/width/shading
+    const tcPrMatch = templateCellXml.match(/<w:tcPr>[\s\S]*?<\/w:tcPr>/);
+    const tcPr = tcPrMatch ? tcPrMatch[0] : '';
+    // Extract pPr (paragraph properties) from the first paragraph to preserve alignment/spacing
+    const pPrMatch = templateCellXml.match(/<w:pPr>[\s\S]*?<\/w:pPr>/);
+    const pPr = pPrMatch ? pPrMatch[0] : '';
+    // Extract rPr (run properties) from the first run to preserve font
+    const rPrMatch = templateCellXml.match(/<w:rPr>[\s\S]*?<\/w:rPr>/);
+    const rPr = rPrMatch ? rPrMatch[0] : '';
+    const encoded = encodeXmlEntities(value || '');
+    return `<w:tc>${tcPr}<w:p>${pPr}<w:r>${rPr}<w:t xml:space="preserve">${encoded}</w:t></w:r></w:p></w:tc>`;
+  }
+
+  // Build a data row from an app component object
+  // Columns: Name of Object | Object Type | Code Version | Comment
+  function buildDataRow(comp) {
+    const cell0 = buildDataCell(headerCells[0].xml, comp.name       || '');
+    const cell1 = buildDataCell(headerCells[1].xml, comp.objectType || '');
+    const cell2 = buildDataCell(headerCells[2].xml, comp.codeVersion|| '');
+    const cell3 = buildDataCell(headerCells[3].xml, comp.comment    || '');
+    // Extract trPr (row properties) from the header row for consistent row height/borders
+    const trPrMatch = headerRow.xml.match(/<w:trPr>[\s\S]*?<\/w:trPr>/);
+    const trPr = trPrMatch ? trPrMatch[0] : '';
+    return `<w:tr>${trPr}${cell0}${cell1}${cell2}${cell3}</w:tr>`;
+  }
+
+  const newDataRowsXml = appComponents.map(buildDataRow).join('');
+
+  // ── Step 5: Splice the document XML ─────────────────────────────────────────
+  // Replace the span of existing data rows (dataRowStart..dataRowEnd-1) with new rows.
+  // We do this as a string splice using the index/length of the first and last data rows.
+  if (dataRowEnd > dataRowStart) {
+    // There are existing data rows to replace
+    const firstDataRow = allRows[dataRowStart];
+    const lastDataRow  = allRows[dataRowEnd - 1];
+    const spliceStart  = firstDataRow.index;
+    const spliceEnd    = lastDataRow.index + lastDataRow.length;
+    return docXml.substring(0, spliceStart) + newDataRowsXml + docXml.substring(spliceEnd);
+  } else {
+    // No existing data rows — insert new rows right after the header row
+    const insertAt = headerRow.index + headerRow.length;
+    return docXml.substring(0, insertAt) + newDataRowsXml + docXml.substring(insertAt);
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Review type injection
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -712,6 +826,11 @@ function populateCRR(crrBuffer, fields) {
   // ── Review type — inject X into selected row, clear the other row ────────────
   if (fields.reviewType) {
     docXml = injectReviewType(docXml, fields.reviewType);
+  }
+
+  // ── Copied Objects table — replace existing data rows with UDD app components ─
+  if (fields.appComponents && fields.appComponents.length > 0) {
+    docXml = injectCopiedObjectsTable(docXml, fields.appComponents);
   }
 
   zip.file('word/document.xml', docXml);

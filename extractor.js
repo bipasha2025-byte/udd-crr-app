@@ -625,6 +625,183 @@ function extractProjectName(lines) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// App Components & Objects extractor (UDD 7.2 → CRR "Copied objects" table)
+// ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Known object-type category labels in UDD 7.2 App Components table.
+ * Used to detect where a new category block starts.
+ */
+const APP_COMPONENT_CATEGORIES = new Set([
+  'module / package', 'report', 'function group', 'structure', 'basic type',
+  'function module', 'include', 'table', 'view', 'class', 'interface',
+  'program', 'subroutine pool', 'type group', 'message class', 'domain',
+  'data element', 'lock object', 'search help', 'number range',
+  'enhancement spot', 'badi definition', 'badi implementation',
+  'idoc type', 'message type', 'logical message', 'extension type',
+]);
+
+function isAppComponentCategory(line) {
+  return APP_COMPONENT_CATEGORIES.has(line.trim().toLowerCase());
+}
+
+/**
+ * Returns true if a line looks like a SAP object name:
+ * starts with Z, Y, or / and contains only uppercase letters, digits, underscores.
+ */
+function looksLikeSAPObject(line) {
+  const t = line.trim();
+  if (t.length < 2) return false;
+  // SAP custom objects start with Z or Y; some start with /
+  return /^[ZY\/][A-Z0-9_\/]{1,}$/i.test(t) && !/^Y$/.test(t);
+}
+
+/**
+ * Extract App Components & Objects from UDD section 7.2.
+ * Returns an array of { name, objectType, comment } objects.
+ * - name:       object name (one entry per object, never combined)
+ * - objectType: category label from leftmost column of that row
+ * - codeVersion: always null (not in UDD 7.2)
+ * - comment:    CRQ number from Upgrade Implications column for that specific object,
+ *               or null if that object's Upgrade Implications cell is blank
+ */
+function extractAppComponents(lines) {
+  const sysStart = findSystemComponentsStart(lines);
+  if (sysStart === -1) return [];
+
+  // Find "App Components & Objects" header within 80 lines of system components
+  let appStart = -1;
+  for (let i = sysStart; i < Math.min(sysStart + 80, lines.length); i++) {
+    if (/app components.*objects/i.test(lines[i])) { appStart = i; break; }
+  }
+  if (appStart === -1) return [];
+
+  // Find the end of the section (next major section heading)
+  let appEnd = lines.length;
+  for (let i = appStart + 1; i < lines.length; i++) {
+    const t = lines[i].trim().toLowerCase();
+    if (/^data description$/i.test(t) || /^7\.\d+/.test(t) || /^8\.\s/i.test(t)) {
+      appEnd = i; break;
+    }
+  }
+
+  // Skip column header lines
+  const SKIP_HEADERS = new Set(['name', 'existing', 'new', 'upgrade implications',
+                                 'app components & objects', 'app components and objects']);
+
+  // Collect non-empty lines BUT keep track of which raw lines they came from.
+  // We need raw-line indices so we can count blank slots in the Upgrade Implications column.
+  const nonEmptyLines = [];   // { text, rawIdx }
+  for (let i = appStart + 1; i < appEnd; i++) {
+    const t = lines[i].trim();
+    if (!t) continue;
+    if (SKIP_HEADERS.has(t.toLowerCase())) continue;
+    nonEmptyLines.push({ text: t, rawIdx: i });
+  }
+
+  // For the Upgrade Implications column we need to count blanks between entries.
+  // After finding names, Existing, New — we compute the raw-line span for Upgrade
+  // by knowing that each column cell has EXACTLY one slot per name row.
+  //
+  // Strategy: for each category block, use raw line positions to count N blank-or-CRQ
+  // slots in the Upgrade Implications column by scanning WITHIN the raw lines range.
+
+  const results = [];
+  let ni = 0;  // index into nonEmptyLines
+
+  while (ni < nonEmptyLines.length) {
+    const { text: t, rawIdx } = nonEmptyLines[ni];
+
+    if (!isAppComponentCategory(t)) { ni++; continue; }
+
+    const objectType = t;
+    const categoryRawIdx = rawIdx;
+    ni++;
+
+    // Collect consecutive SAP object names
+    const names = [];
+    const nameRawIdxs = [];
+    while (ni < nonEmptyLines.length && looksLikeSAPObject(nonEmptyLines[ni].text)) {
+      names.push(nonEmptyLines[ni].text);
+      nameRawIdxs.push(nonEmptyLines[ni].rawIdx);
+      ni++;
+    }
+    if (names.length === 0) continue;
+
+    // Skip Existing column (N "Y"/"N" entries)
+    let skipped = 0;
+    while (ni < nonEmptyLines.length && skipped < names.length &&
+           /^[YNy]$/.test(nonEmptyLines[ni].text)) {
+      ni++; skipped++;
+    }
+
+    // Skip New column (up to N "Y"/"N" entries)
+    let newSkipped = 0;
+    while (ni < nonEmptyLines.length && newSkipped < names.length &&
+           /^[YNyn]$/.test(nonEmptyLines[ni].text)) {
+      ni++; newSkipped++;
+    }
+
+    // Collect Upgrade Implications.
+    // The Upgrade column has exactly N cells (one per name).
+    // Mammoth renders each cell as one line (CRQ value or blank), with one separator
+    // blank line between cells. Multiple consecutive blanks at the start are inter-column
+    // spacing — skip them to reach the first Upgrade cell.
+    //
+    // Strategy: collect the raw non-empty lines that belong to the Upgrade column.
+    // Those are lines that are either a CRQ code or ENTIRELY blank (cell is empty),
+    // where we distinguish cell-blanks by their position relative to the column sequence.
+    //
+    // Simpler: collect the N values by scanning forward through nonEmptyLines —
+    // but use "blank raw lines between non-empties" to detect blank cells.
+    // Each upgrade CELL is separated from the previous by at least one blank raw line.
+    // If two consecutive non-empty lines appear with NO blank raw line between them,
+    // they are in different columns, not both Upgrade.
+
+    const upgrades = [];
+    let rawJ = ni < nonEmptyLines.length ? nonEmptyLines[ni].rawIdx : appEnd;
+
+    // Skip any leading blank lines (inter-column gap between New and Upgrade columns)
+    while (rawJ < appEnd && !lines[rawJ].trim()) rawJ++;
+
+    while (upgrades.length < names.length && rawJ < appEnd) {
+      const raw = lines[rawJ].trim();
+      if (!raw) {
+        // A blank line here means a blank Upgrade cell for the current name
+        upgrades.push(null);
+        rawJ++;
+        // Skip exactly ONE separator blank line after a blank cell.
+        // Do NOT consume multiple blanks — the next blank might be another blank cell.
+        if (rawJ < appEnd && !lines[rawJ].trim()) rawJ++;
+        continue;
+      }
+      // Non-empty line
+      if (isAppComponentCategory(raw) || SKIP_HEADERS.has(raw.toLowerCase())) break;
+      upgrades.push(/CRQ/i.test(raw) ? raw : null);
+      rawJ++;
+      // Skip exactly ONE separator blank line after a non-empty value.
+      // Do NOT consume multiple blanks — the next blank might be a blank cell.
+      if (rawJ < appEnd && !lines[rawJ].trim()) rawJ++;
+    }
+
+    // Advance ni past any lines we consumed
+    while (ni < nonEmptyLines.length && nonEmptyLines[ni].rawIdx < rawJ) ni++;
+
+    // Emit one row per name
+    for (let k = 0; k < names.length; k++) {
+      results.push({
+        name:        names[k],
+        objectType:  objectType,
+        codeVersion: null,     // not in UDD 7.2
+        comment:     upgrades[k] || null,
+      });
+    }
+  }
+
+  return results;
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Main extraction function
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -652,11 +829,13 @@ function extractFieldsFromUDD(rawText) {
   // relatedUDDName is injected by server.js from the uploaded filename
   // sopConventions and devLanguage are fixed values — populated in populator.js
 
+  const appComponents = extractAppComponents(lines);
+
   return {
     name, crrTitle, uddCreationDate, developmentType,
     reviewer, developerFunction, developerName,
     r3Version, sourceSystem, legacySystem,
-    crqNumber, projectName,
+    crqNumber, projectName, appComponents,
   };
 }
 
