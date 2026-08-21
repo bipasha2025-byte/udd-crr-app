@@ -560,13 +560,30 @@ function parseRevisionLog(lines) {
       if (!current.crqNumbers.includes(norm)) current.crqNumbers.push(norm);
     }
 
-    // Project name — a descriptive text line that isn't a date, transport, or CRQ number alone
-    // Typically looks like "SAP PE1: InfleXio (INFL_QM_42) - GLIMS Additional Fields..."
-    if (!current.projectName && t.length > 10 && !/^DE1K|^AE1K|^PE1K|^[A-Z]{2,3}K\d/i.test(t) &&
-        !looksLikeDateStr(t) && !/^\d{1,2}$/.test(t) &&
-        !(/^(end|begin|start)\s*of\s*crq/i.test(t))) {
-      // Likely a project/reason description
-      if (crqMatches.length === 0 && /[a-zA-Z]{3}/.test(t)) {
+    // Project name — the FIRST standalone heading line in the REASONS OF THE CHANGE cell,
+    // appearing before the detailed change description.
+    // Rules:
+    //   - Must be the first qualifying line (once set, do not overwrite)
+    //   - Must contain at least 3 letters
+    //   - Must NOT be a transport request ID (DE1K..., AE1K..., PE1K...)
+    //   - Must NOT be a date string
+    //   - Must NOT be a version number alone
+    //   - Must NOT be an author/update line ("TS updated by", "FS Updated by", etc.)
+    //   - Must NOT be a CRQ-only line (a line whose ONLY content is a CRQ number)
+    //   - Must NOT be an incident-only line (INC followed by digits only)
+    //   - Short names like "UCB_RUN" or "UCB RUN" ARE valid — no minimum length
+    if (!current.projectName &&
+        !/^DE1K|^AE1K|^PE1K|^[A-Z]{2,3}K\d/i.test(t) &&
+        !looksLikeDateStr(t) &&
+        !/^\d{1,2}$/.test(t) &&
+        !/^(end|begin|start)\s*of\s*crq/i.test(t) &&
+        !/^(ts|fs)\s+(updated|update)\s+by/i.test(t) &&
+        !/^(formal\s+adjustments|kernel\s+release|TS\s+updated|FS\s+updated)/i.test(t) &&
+        !/^INC\d/i.test(t) &&
+        /[a-zA-Z]{3}/.test(t)) {
+      // A line that is ONLY a CRQ number should not become the project name
+      const isCRQOnly = /^CRQ[\s\d]+$/i.test(t.trim());
+      if (!isCRQOnly) {
         current.projectName = t;
       }
     }

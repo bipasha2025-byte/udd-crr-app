@@ -21,20 +21,6 @@ function todayFormatted() {
   return `${dd}-${mon}-${yyyy}`;
 }
 
-/**
- * Trim a UDD filename to include only up to the first 4-digit number segment.
- * Nothing after the 4-digit number is kept.
- * e.g. "UDD-SAPECC-QM-1609-04" → "UDD-SAPECC-QM-1609"
- *      "UDD-SAP-MM-2024-01"    → "UDD-SAP-MM-2024"
- *      "UDD-SAPECC-QM-1609"    → "UDD-SAPECC-QM-1609"  (no change needed)
- * If no 4-digit segment is found, returns the name unchanged.
- */
-function trimToFourDigitNumber(name) {
-  // Match up to and including the first 4-digit number in the string
-  const match = name.match(/^(.*?\d{4})/);
-  return match ? match[1] : name;
-}
-
 const { extractFieldsFromUDD, validateExtraction } = require('./extractor');
 const { populateCRR } = require('./populator');
 
@@ -159,12 +145,11 @@ app.post(
       const fields = extractFieldsFromUDD(uddText);
       const errors = validateExtraction(fields);
 
-      // Derive relatedUDDName from the original UDD filename (strip extension).
-      // Trim to only up to the first 4-digit number segment, nothing after it.
-      // e.g. "UDD-SAPECC-QM-1609-04.docx" → "UDD-SAPECC-QM-1609"
-      //      "UDD-SAP-MM-2024-01.docx"    → "UDD-SAP-MM-2024"
+      // Derive relatedUDDName from the original UDD filename — strip only the .docx extension,
+      // preserve the rest exactly (including document numbers, hyphens, suffixes like "-04").
+      // e.g. "UDD-SAPECC-QM-1609-04.docx" → "UDD-SAPECC-QM-1609-04"
       const uddBaseName = path.basename(uddFile.originalname, path.extname(uddFile.originalname));
-      fields.relatedUDDName = trimToFourDigitNumber(uddBaseName);
+      fields.relatedUDDName = uddBaseName;
 
       // Create session
       const sessionId = uuidv4();
