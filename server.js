@@ -205,8 +205,10 @@ app.post('/api/generate', express.json(), async (req, res) => {
     const sess = getSession(sessionId);
 
     // Merge: start from session's extracted fields (contains server-injected values like relatedUDDName),
-    // then overlay any user-confirmed edits on top
+    // then overlay any user-confirmed edits on top.
+    // reviewType comes directly from the request body (user selection from UI).
     const finalFields = Object.assign({}, sess.extractedFields, fields || {});
+    if (req.body.reviewType) finalFields.reviewType = req.body.reviewType;
 
     // Validate all required fields are present
     const errors = validateExtraction(finalFields);

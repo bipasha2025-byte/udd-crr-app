@@ -578,6 +578,88 @@ function injectNameIntoCoverPage(docXml, name, injected) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// Review type injection
+// ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Inject the review type selection into the CRR.
+ *
+ * The CRR Section 4 has two rows:
+ *   ROW A: cell[0]=blank   cell[1]="This is a FULL review"
+ *   ROW B: cell[0]="Y"/""  cell[1]="Only CHANGED objects have been reviewed"
+ *
+ * reviewType = 'full_review'            → put "X" in ROW A cell[0], clear ROW B cell[0]
+ * reviewType = 'changed_objects_removed' → put "X" in ROW B cell[0], clear ROW A cell[0]
+ *
+ * We identify the rows by their label text in cell[1] (case-insensitive).
+ * We preserve all formatting — only the text content of cell[0] is changed.
+ */
+function injectReviewType(docXml, reviewType) {
+  if (!reviewType) return docXml;
+
+  const isFull    = reviewType === 'full_review';
+  const isChanged = reviewType === 'changed_objects_removed';
+  if (!isFull && !isChanged) return docXml;
+
+  // We need to process pairs of matching rows. Use a stateful replace.
+  return docXml.replace(/(<w:tr[ >][\s\S]*?<\/w:tr>)/g, (rowXml) => {
+    const cells = splitRowIntoCells(rowXml);
+    if (cells.length < 2) return rowXml;
+
+    const label = extractTextFromXml(cells[1].xml).replace(/\s+/g, ' ').trim().toLowerCase();
+
+    const isFullRow    = /this is a full review/i.test(label);
+    const isChangedRow = /only changed objects/i.test(label) ||
+                         /changed objects have been/i.test(label) ||
+                         /changed objects have been removed/i.test(label) ||
+                         /changed objects have been reviewed/i.test(label);
+
+    if (!isFullRow && !isChangedRow) return rowXml;
+
+    // Determine whether to put X or blank in cell[0]
+    const putX = (isFullRow && isFull) || (isChangedRow && isChanged);
+    const newCell0 = putX
+      ? setCellText(cells[0].xml, 'Y')
+      : clearCellText(cells[0].xml);
+
+    return replaceCell(rowXml, cells[0], newCell0);
+  });
+}
+
+/**
+ * Set the text content of a cell to the given value.
+ * Preserves all cell formatting (tcPr, pPr, rPr). Only touches <w:t> content.
+ */
+function setCellText(cellXml, value) {
+  const encoded = encodeXmlEntities(value);
+  // If a run already exists, replace the first <w:t> text
+  if (/<w:r[ >]/.test(cellXml)) {
+    let replaced = false;
+    const result = cellXml.replace(/<w:t([^>]*)>[^<]*<\/w:t>/, (full, attrs) => {
+      if (!replaced) {
+        replaced = true;
+        return `<w:t xml:space="preserve">${encoded}</w:t>`;
+      }
+      return full;
+    });
+    if (replaced) return result;
+    // Run exists but no <w:t> — insert before </w:r>
+    return cellXml.replace(/<\/w:r>/, `<w:t xml:space="preserve">${encoded}</w:t></w:r>`);
+  }
+  // No run — insert a new run before </w:p>
+  return cellXml.replace(/<\/w:p>/, `<w:r><w:t xml:space="preserve">${encoded}</w:t></w:r></w:p>`);
+}
+
+/**
+ * Clear the text content of a cell (remove all <w:r> runs from paragraphs,
+ * leaving the paragraph and cell structure intact).
+ */
+function clearCellText(cellXml) {
+  // Remove all <w:r>...</w:r> blocks from inside <w:p> elements
+  return cellXml.replace(/<w:r[ >][\s\S]*?<\/w:r>/g, '');
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Main population entry point
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -625,6 +707,11 @@ function populateCRR(crrBuffer, fields) {
   for (const spec of specs) {
     if (!spec.value || injected.has(spec.id)) continue;
     docXml = processParagraphs(docXml, spec, injected);
+  }
+
+  // ── Review type — inject X into selected row, clear the other row ────────────
+  if (fields.reviewType) {
+    docXml = injectReviewType(docXml, fields.reviewType);
   }
 
   zip.file('word/document.xml', docXml);
