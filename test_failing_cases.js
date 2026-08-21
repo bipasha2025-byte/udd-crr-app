@@ -1,29 +1,26 @@
 'use strict';
 
 /**
- * Regression tests covering three successive bug fixes for the "empty/incorrect
- * Copied objects table" defect:
+ * Regression tests covering the bug fixes for the "empty/incorrect Copied objects table" defect.
  *
- * Fix 1 (session N-1): APP_COMPONENT_CATEGORIES was missing 'package',
- *   'table index', 'table index (secondary index)', 'secondary index', and other
- *   valid SAP object type labels → entire block skipped → appComponents = [].
+ * Fix 1: APP_COMPONENT_CATEGORIES was missing 'package', 'table index',
+ *   'table index (secondary index)', 'secondary index', 'development class', etc.
+ *   → block skipped → appComponents = [].
  *
- * Fix 2 (session N-1): looksLikeSAPObject() only accepted Z/Y//-prefixed names.
- *   Standard SAP objects (VLPMA, VBAK, T001) and secondary-index notation
- *   (VLPMA~ZVL) were rejected → names array empty → block skipped.
+ * Fix 2: looksLikeSAPObject() only accepted Z/Y//-prefixed names.
+ *   Standard SAP objects (VLPMA, VBAK, T001) and tilde notation (VLPMA~ZVL)
+ *   were rejected → names array empty → block skipped.
  *
- * Fix 3 (session N): Three additional bugs from the exact failing UDD/CRR pair:
- *   a. 'Development Class' missing from APP_COMPONENT_CATEGORIES → ZUWM row dropped
- *   b. objectType copied raw from UDD label instead of being translated to CRR term
- *      (e.g. 'Secondary Index' → should be 'Table Index (Secondary Index)')
- *   c. codeVersion was null instead of defaulting to 'N/A'
+ * Fix 3a: 'Development Class' missing from APP_COMPONENT_CATEGORIES → ZUWM row dropped.
+ * Fix 3b: objectType must be a direct, exact copy of the UDD label — no translation.
+ * Fix 3c: codeVersion was null; now defaults to 'N/A'.
  *
- * Reference example (bug report exact input):
+ * Reference example (spec exact input):
  *   UDD row 1: label='Development Class', name='ZUWM',      existing=Y, new='',  upgrade=''
  *   UDD row 2: label='Secondary Index',   name='VLPMA~ZVL', existing='', new=Y, upgrade=''
  *   Expected CRR:
- *     row 1 → Name: ZUWM,      Object Type: Package,                      Code Version: N/A, Comment: ''
- *     row 2 → Name: VLPMA~ZVL, Object Type: Table Index (Secondary Index), Code Version: N/A, Comment: ''
+ *     row 1 → Name: ZUWM,      Object Type: Development Class, Code Version: N/A, Comment: ''
+ *     row 2 → Name: VLPMA~ZVL, Object Type: Secondary Index,   Code Version: N/A, Comment: ''
  */
 
 const { extractFieldsFromUDD } = require('./extractor');
@@ -61,7 +58,7 @@ console.log('\n[Test 1] Category "Package" — working reference ZUWM example');
   assert(comps && comps[0] && comps[0].name === 'ZUWM',
     `name = "ZUWM" (got "${comps && comps[0] && comps[0].name}")`);
   assert(comps && comps[0] && comps[0].objectType === 'Package',
-    `objectType = "Package" (got "${comps && comps[0] && comps[0].objectType}")`);
+    `objectType = "Package" (direct copy of UDD label) (got "${comps && comps[0] && comps[0].objectType}")`);
   assert(comps && comps[0] && comps[0].comment === null,
     `comment = null (no CRQ) (got "${comps && comps[0] && comps[0].comment}")`);
 }
@@ -92,7 +89,7 @@ console.log('\n[Test 2] Category "Table Index (Secondary Index)" + VLPMA~ZVL obj
   assert(comps && comps[0] && comps[0].name === 'VLPMA~ZVL',
     `name = "VLPMA~ZVL" (got "${comps && comps[0] && comps[0].name}")`);
   assert(comps && comps[0] && comps[0].objectType === 'Table Index (Secondary Index)',
-    `objectType = "Table Index (Secondary Index)" (got "${comps && comps[0] && comps[0].objectType}")`);
+    `objectType = "Table Index (Secondary Index)" (direct copy of UDD label) (got "${comps && comps[0] && comps[0].objectType}")`);
   assert(comps && comps[0] && comps[0].comment === 'CRQ175469',
     `comment = "CRQ175469" (got "${comps && comps[0] && comps[0].comment}")`);
 }
@@ -128,9 +125,9 @@ console.log('\n[Test 3] Full working reference: Package ZUWM + Table Index VLPMA
     `2 components extracted (got ${comps ? comps.length : 'null'})`);
   if (comps && comps.length >= 2) {
     assert(comps[0].name === 'ZUWM' && comps[0].objectType === 'Package' && comps[0].comment === null,
-      `row 0: ZUWM / Package / null`);
+      `row 0: ZUWM / Package (direct copy) / null`);
     assert(comps[1].name === 'VLPMA~ZVL' && comps[1].objectType === 'Table Index (Secondary Index)' && comps[1].comment === 'CRQ175469',
-      `row 1: VLPMA~ZVL / Table Index (Secondary Index) / CRQ175469`);
+      `row 1: VLPMA~ZVL / Table Index (Secondary Index) (direct copy) / CRQ175469`);
   }
 }
 
@@ -236,13 +233,13 @@ console.log('\n[Test 7] Exact bug report case: Development Class/ZUWM + Secondar
     '7.2 System Components', '',
     'App Components & Objects',
     'Name', 'Existing', 'New', 'Upgrade Implications', '',
-    'Development Class',  // UDD label — must translate to 'Package' in CRR
+    'Development Class',  // UDD label — copied directly to CRR Object Type
     'ZUWM',
     'Y',  // Existing = Y
     '',   // New = blank
     '',   // Upgrade = blank (no CRQ)
     '',
-    'Secondary Index',    // UDD label — must translate to 'Table Index (Secondary Index)' in CRR
+    'Secondary Index',    // UDD label — copied directly to CRR Object Type
     'VLPMA~ZVL',
     '',   // Existing = blank
     'Y',  // New = Y
@@ -256,50 +253,49 @@ console.log('\n[Test 7] Exact bug report case: Development Class/ZUWM + Secondar
   assert(Array.isArray(c) && c.length === 2,
     `2 rows generated — ZUWM row not dropped (got ${c ? c.length : 'null'})`);
   if (c && c.length >= 2) {
-    // Bug 3a: ZUWM row was being dropped because 'Development Class' wasn't in the category set
+    // Fix 3a: ZUWM row was being dropped because 'Development Class' wasn't in the category set
     assert(c[0].name === 'ZUWM',
-      `row 0 name = "ZUWM" (was missing before fix)`);
-    // Bug 3b: objectType must be translated, not copied raw from UDD
-    assert(c[0].objectType === 'Package',
-      `row 0 objectType = "Package" (was being dropped, never reached translation)`);
-    // Bug 3c: codeVersion must default to 'N/A'
+      `row 0 name = "ZUWM"`);
+    // Fix 3b: objectType is a direct copy of the UDD label — no translation
+    assert(c[0].objectType === 'Development Class',
+      `row 0 objectType = "Development Class" (direct copy, not "Package") (got "${c[0].objectType}")`);
+    // Fix 3c: codeVersion defaults to 'N/A'
     assert(c[0].codeVersion === 'N/A',
-      `row 0 codeVersion = "N/A" (was null before fix)`);
+      `row 0 codeVersion = "N/A"`);
     assert(c[0].comment === null,
-      `row 0 comment = null (no CRQ in upgrade implications)`);
+      `row 0 comment = null (no CRQ)`);
 
-    // Bug 3b for VLPMA~ZVL: 'Secondary Index' must translate to full CRR term
     assert(c[1].name === 'VLPMA~ZVL',
       `row 1 name = "VLPMA~ZVL"`);
-    assert(c[1].objectType === 'Table Index (Secondary Index)',
-      `row 1 objectType = "Table Index (Secondary Index)" (was "Secondary Index" before fix)`);
+    // Fix 3b: objectType is a direct copy of the UDD label — no translation
+    assert(c[1].objectType === 'Secondary Index',
+      `row 1 objectType = "Secondary Index" (direct copy, not "Table Index (Secondary Index)") (got "${c[1].objectType}")`);
     assert(c[1].codeVersion === 'N/A',
-      `row 1 codeVersion = "N/A" (was null before fix)`);
+      `row 1 codeVersion = "N/A"`);
     assert(c[1].comment === null,
-      `row 1 comment = null (no CRQ in upgrade implications)`);
+      `row 1 comment = null (no CRQ)`);
   }
 }
 
 // ─────────────────────────────────────────────────────────────────
-// TEST 8: translateObjectType — key translations produce correct CRR terms
+// TEST 8: objectType is a direct copy for all category labels
 // ─────────────────────────────────────────────────────────────────
-console.log('\n[Test 8] translateObjectType — UDD label → CRR Object Type translation');
+console.log('\n[Test 8] objectType is a direct copy of UDD label for all category types');
 {
-  // Test via extractAppComponents (which calls translateObjectType internally)
-  const translationTests = [
-    ['Development Class',           'ZDVCLASS',  'Package'],
-    ['Secondary Index',             'ZTAB~ZIDX', 'Table Index (Secondary Index)'],
-    ['Table Index',                 'ZTAB~ZIDX', 'Table Index (Secondary Index)'],
+  const directCopyTests = [
+    ['Development Class',            'ZDVCLASS',  'Development Class'],
+    ['Secondary Index',              'ZTAB~ZIDX', 'Secondary Index'],
+    ['Table Index',                  'ZTAB~ZIDX', 'Table Index'],
     ['Table Index (Secondary Index)','ZTAB~ZIDX', 'Table Index (Secondary Index)'],
-    ['Module/SubModule Area',       'ZMM',        'Module / Package'],
-    ['Report',                      'ZRPT_TEST',  'Report'],
-    ['Structure',                   'Z1STRUCT',   'Structure'],
-    ['Package',                     'ZPKG',        'Package'],
-    ['Include Program',             'ZINC_TEST',  'Include'],
-    ['Transaction Code',            'ZTCODE',     'Transaction'],
+    ['Module/SubModule Area',        'ZMM',       'Module/SubModule Area'],
+    ['Report',                       'ZRPT_TEST', 'Report'],
+    ['Structure',                    'Z1STRUCT',  'Structure'],
+    ['Package',                      'ZPKG',      'Package'],
+    ['Include Program',              'ZINC_TEST', 'Include Program'],
+    ['Transaction Code',             'ZTCODE',    'Transaction Code'],
   ];
 
-  for (const [category, objName, expectedType] of translationTests) {
+  for (const [category, objName, expectedType] of directCopyTests) {
     const udd = [
       '', 'unit detailed design', '', 'SAP ECC/6.0', '',
       '7.2 System Components', '',
@@ -314,7 +310,7 @@ console.log('\n[Test 8] translateObjectType — UDD label → CRR Object Type tr
     const c = fields.appComponents;
     const gotType = c && c[0] && c[0].objectType;
     assert(gotType === expectedType,
-      `"${category}" → objectType="${gotType}" (expected "${expectedType}")`);
+      `"${category}" → objectType="${gotType}" (expected direct copy "${expectedType}")`);
   }
 }
 

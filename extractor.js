@@ -671,84 +671,6 @@ const APP_COMPONENT_CATEGORIES = new Set([
   'include program',                // Alternative label for Include
 ]);
 
-/**
- * Translate a UDD category label (from the App Components & Objects column) to the
- * correct Object Type term used in the CRR "Copied objects" table.
- *
- * UDD templates often use different terminology from the CRR. This map ensures every
- * object gets the correct CRR-standard Object Type, not a raw pass-through of the UDD label.
- *
- * @param {string} uddLabel - the category label exactly as read from the UDD
- * @returns {string} the CRR Object Type term to use
- */
-function translateObjectType(uddLabel) {
-  const key = uddLabel.trim().toLowerCase();
-  // Explicit UDD→CRR translations (cases where labels differ)
-  const TRANSLATIONS = {
-    'development class':              'Package',
-    'module/submodule area':          'Module / Package',
-    'module / submodule area':        'Module / Package',
-    'secondary index':                'Table Index (Secondary Index)',
-    'table index':                    'Table Index (Secondary Index)',
-    'module pool':                    'Module Pool',
-    'include program':                'Include',
-    'transaction code':               'Transaction',
-    'badi definition':                'BAdI Definition',
-    'badi implementation':            'BAdI Implementation',
-    'idoc type':                      'IDoc Type',
-  };
-  if (TRANSLATIONS[key]) return TRANSLATIONS[key];
-  // Pass-through with Title Case normalisation for known labels
-  // (ensures consistent capitalisation in the CRR)
-  const TITLE_CASE = {
-    'module / package':     'Module / Package',
-    'report':               'Report',
-    'function group':       'Function Group',
-    'structure':            'Structure',
-    'basic type':           'Basic Type',
-    'function module':      'Function Module',
-    'include':              'Include',
-    'table':                'Table',
-    'view':                 'View',
-    'class':                'Class',
-    'interface':            'Interface',
-    'program':              'Program',
-    'subroutine pool':      'Subroutine Pool',
-    'type group':           'Type Group',
-    'message class':        'Message Class',
-    'domain':               'Domain',
-    'data element':         'Data Element',
-    'lock object':          'Lock Object',
-    'search help':          'Search Help',
-    'number range':         'Number Range',
-    'enhancement spot':     'Enhancement Spot',
-    'extension type':       'Extension Type',
-    'package':              'Package',
-    'table index (secondary index)': 'Table Index (Secondary Index)',
-    'transaction':          'Transaction',
-    'user exit':            'User Exit',
-    'enhancement':          'Enhancement',
-    'form':                 'Form',
-    'smart form':           'Smart Form',
-    'adobe form':           'Adobe Form',
-    'web dynpro':           'Web Dynpro Component',
-    'web dynpro component': 'Web Dynpro Component',
-    'authorization object': 'Authorization Object',
-    'workflow':             'Workflow',
-    'business object':      'Business Object',
-    'screen':               'Screen',
-    'append structure':     'Append Structure',
-    'table enhancement':    'Table Enhancement',
-    'implicit enhancement': 'Implicit Enhancement',
-    'explicit enhancement': 'Explicit Enhancement',
-    'logical message':      'Logical Message',
-    'message type':         'Message Type',
-  };
-  if (TITLE_CASE[key]) return TITLE_CASE[key];
-  // Unknown label: return the original text capitalised correctly (best effort)
-  return uddLabel.trim();
-}
-
 function isAppComponentCategory(line) {
   return APP_COMPONENT_CATEGORIES.has(line.trim().toLowerCase());
 }
@@ -915,14 +837,12 @@ function extractAppComponents(lines) {
     // Advance ni past any lines we consumed
     while (ni < nonEmptyLines.length && nonEmptyLines[ni].rawIdx < rawJ) ni++;
 
-    // Translate the UDD category label to the CRR Object Type term
-    const crrObjectType = translateObjectType(objectType);
-
     // Emit one row per name
+    // objectType is the exact UDD 'App Components & Objects' label — copied directly, no translation
     for (let k = 0; k < names.length; k++) {
       results.push({
         name:        names[k],
-        objectType:  crrObjectType,
+        objectType:  objectType,
         codeVersion: 'N/A',    // UDD 7.2 does not carry a code version; default to N/A per spec
         comment:     upgrades[k] || null,
       });
