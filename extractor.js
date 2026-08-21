@@ -633,12 +633,35 @@ function extractProjectName(lines) {
  * Used to detect where a new category block starts.
  */
 const APP_COMPONENT_CATEGORIES = new Set([
+  // Core ABAP object types (original set)
   'module / package', 'report', 'function group', 'structure', 'basic type',
   'function module', 'include', 'table', 'view', 'class', 'interface',
   'program', 'subroutine pool', 'type group', 'message class', 'domain',
   'data element', 'lock object', 'search help', 'number range',
   'enhancement spot', 'badi definition', 'badi implementation',
   'idoc type', 'message type', 'logical message', 'extension type',
+  // Additional types seen in real UDDs (previously missing — caused empty table)
+  'package',                        // Development class / package (e.g. ZUWM)
+  'table index',                    // DB secondary index (short form)
+  'table index (secondary index)',  // DB secondary index (full form, e.g. VLPMA~ZVL)
+  'secondary index',                // DB secondary index (alternative label)
+  'module pool',                    // ABAP module pool
+  'transaction',                    // SE93 transaction code
+  'user exit',                      // SAP user exit
+  'enhancement',                    // ABAP enhancement
+  'form',                           // SAPscript form
+  'smart form',                     // SAP SmartForm
+  'adobe form',                     // Adobe Interactive Form
+  'web dynpro',                     // Web Dynpro component (short)
+  'web dynpro component',           // Web Dynpro component (full)
+  'authorization object',           // Authorization object
+  'workflow',                       // SAP Workflow
+  'business object',                // SAP Business Object
+  'screen',                         // ABAP screen
+  'append structure',               // Append structure to SAP table
+  'table enhancement',              // Table extension
+  'implicit enhancement',           // Implicit enhancement
+  'explicit enhancement',           // Explicit enhancement
 ]);
 
 function isAppComponentCategory(line) {
@@ -646,14 +669,34 @@ function isAppComponentCategory(line) {
 }
 
 /**
- * Returns true if a line looks like a SAP object name:
- * starts with Z, Y, or / and contains only uppercase letters, digits, underscores.
+ * Returns true if a line looks like a SAP object name.
+ *
+ * SAP object names are always ALL-CAPS, no spaces, no lowercase.
+ * They include:
+ *   - Z/Y custom objects:  ZUWM, ZCL_MY_CLASS, ZFM_FUNC_01
+ *   - Namespace objects:   /NAMSP/OBJ
+ *   - Standard SAP objs:   VBAK, MARA, T001, BSEG, VLPMA
+ *   - Secondary indexes:   VLPMA~ZVL  (TableName~IndexName)
+ *
+ * Explicitly excluded:
+ *   - Single Y / N    (Existing / New column values)
+ *   - Pure digits     (code version numbers like "01", "14")
+ *   - N/A             (not applicable placeholder)
+ *   - CRQ...          (upgrade implications CRQ codes)
+ *   - Any word with lowercase letters (English labels like "Enhancement")
+ *   - Strings with spaces, hyphens, or parentheses
  */
 function looksLikeSAPObject(line) {
   const t = line.trim();
   if (t.length < 2) return false;
-  // SAP custom objects start with Z or Y; some start with /
-  return /^[ZY\/][A-Z0-9_\/]{1,}$/i.test(t) && !/^Y$/.test(t);
+  if (/^[YN]$/.test(t)) return false;          // single Y/N column values
+  if (/^[0-9]+$/.test(t)) return false;         // pure code version numbers
+  if (/^N\/A$/i.test(t)) return false;          // N/A placeholder
+  if (/^CRQ/i.test(t)) return false;            // CRQ upgrade implication codes
+  if (/[a-z]/.test(t)) return false;            // lowercase = English text, not SAP name
+  if (/[^A-Z0-9_\/~]/.test(t)) return false;   // invalid characters (space, hyphen, paren…)
+  if (!/^[A-Z\/]/.test(t)) return false;        // must start with letter or /
+  return true;
 }
 
 /**
