@@ -155,15 +155,27 @@ function extractName(lines) {
 }
 
 /**
- * Find the line index of the "SAP ECC" platform line near the start of the UDD.
+ * Find the line index of the SAP platform line near the start of the UDD.
+ * Matches any "SAP ..." line (e.g. "SAP ECC/6.0", "SAP GTW 7.5", "SAP S/4HANA", "SAP ECC 6.0").
  * Returns -1 if not found within the first 80 lines.
  */
 function findSapEccLine(lines) {
   for (let i = 0; i < Math.min(80, lines.length); i++) {
-    const t = lines[i].trim().toLowerCase();
-    if (t.startsWith('sap ecc') || t === 'sap ecc/6.0' || t === 'sap ecc 6.0') return i;
+    const t = lines[i].trim();
+    if (/^SAP\s+\S/i.test(t)) return i;
   }
   return -1;
+}
+
+/**
+ * Extract the System Environment value from the UDD cover page.
+ * This is the SAP platform line (e.g. "SAP ECC/6.0", "SAP GTW 7.5", "SAP S/4HANA").
+ * It appears as the second non-trivial line of the UDD, right after the document type line.
+ */
+function extractSystemEnvironment(lines) {
+  const idx = findSapEccLine(lines);
+  if (idx !== -1) return lines[idx].trim();
+  return null;
 }
 
 /** Returns true if the string is a role/function label, not a person name */
@@ -901,6 +913,9 @@ function extractFieldsFromUDD(rawText) {
   const developerFunction = extractDeveloperFunction(lines);
   const developerName     = extractDeveloperName(lines);
 
+  // Cover page — system environment (e.g. "SAP ECC/6.0", "SAP GTW 7.5")
+  const systemEnvironment = extractSystemEnvironment(lines);
+
   // Section 4 — REPOSITORY OBJECTS
   const r3Version     = extractR3Version(lines);
   const sourceSystem  = extractSourceSystem(lines);
@@ -916,6 +931,7 @@ function extractFieldsFromUDD(rawText) {
   return {
     name, crrTitle, uddCreationDate, developmentType,
     reviewer, developerFunction, developerName,
+    systemEnvironment,
     r3Version, sourceSystem, legacySystem,
     crqNumber, projectName, appComponents, conclusionEntries,
   };

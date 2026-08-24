@@ -467,6 +467,77 @@ function processParagraphs(xml, spec, injected) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// Cover page system environment injection (ROW 0, para 1)
+// ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Replace the System Environment value in the CRR cover page (ROW 0, para 1).
+ *
+ * ROW 0 is the first <w:tr> in the document. Its single merged cell contains:
+ *   Para 0: "Code review report"  ← document type — DO NOT TOUCH
+ *   Para 1: "SAP ECC 6.0"         ← system environment ← REPLACE with UDD value
+ *
+ * Strategy:
+ *   1. Find the first <w:tr> in docXml.
+ *   2. Confirm it has exactly 1 cell (merged cover row).
+ *   3. Collect its <w:p> paragraphs.
+ *   4. Para 1 (index 1) holds the current system environment text — replace its
+ *      <w:t> content with the new value while preserving all run/para properties.
+ *
+ * @param {string} docXml
+ * @param {string} value  - e.g. "SAP GTW 7.5" or "SAP ECC/6.0"
+ * @returns {string} modified docXml
+ */
+function injectSystemEnvironmentIntoCoverPage(docXml, value) {
+  if (!value) return docXml;
+  const encoded = encodeXmlEntities(value);
+
+  let done = false;
+  return docXml.replace(/(<w:tr[ >][\s\S]*?<\/w:tr>)/g, (rowXml) => {
+    if (done) return rowXml;
+
+    const cells = splitRowIntoCells(rowXml);
+    if (cells.length !== 1) return rowXml; // only the merged single-cell cover row
+
+    // Collect all <w:p> paragraphs in the single cell
+    const paraRe = /(<w:p[ >][\s\S]*?<\/w:p>)/g;
+    const paras = [];
+    let pm;
+    while ((pm = paraRe.exec(cells[0].xml)) !== null) {
+      paras.push({ xml: pm[1], index: pm.index, length: pm[1].length });
+    }
+
+    // We need para[1] — the system environment line
+    if (paras.length < 2) return rowXml;
+
+    const targetPara = paras[1];
+
+    // Replace the <w:t> text inside para[1], preserving rPr/pPr
+    let newParaXml = targetPara.xml;
+    let replaced = false;
+    newParaXml = newParaXml.replace(/<w:t([^>]*)>[^<]*<\/w:t>/, (full, attrs) => {
+      replaced = true;
+      return `<w:t xml:space="preserve">${encoded}</w:t>`;
+    });
+    if (!replaced) {
+      // No existing <w:t> — insert a run before </w:p>
+      newParaXml = newParaXml.replace(/<\/w:p>/,
+        `<w:r><w:t xml:space="preserve">${encoded}</w:t></w:r></w:p>`);
+    }
+
+    // Splice the new para back into the cell XML
+    const oldCellXml = cells[0].xml;
+    const newCellXml =
+      oldCellXml.substring(0, targetPara.index) +
+      newParaXml +
+      oldCellXml.substring(targetPara.index + targetPara.length);
+
+    done = true;
+    return replaceCell(rowXml, cells[0], newCellXml);
+  });
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Cover page name injection
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -919,9 +990,16 @@ function populateCRR(crrBuffer, fields) {
   // ── Process main document body ────────────────────────────────────────────
   let docXml = zip.file('word/document.xml').asText();
 
-  // ── Special case: inject name into blank first paragraph of cover page row 1 ─
+  // ── Cover page ROW 0, para 1: System Environment (e.g. "SAP GTW 7.5") ────────
+  // Replaces the existing "SAP ECC 6.0" text with the value from the UDD.
+  // Must run before injectNameIntoCoverPage so row indices are stable.
+  if (fields.systemEnvironment) {
+    docXml = injectSystemEnvironmentIntoCoverPage(docXml, fields.systemEnvironment);
+  }
+
+  // ── Cover page ROW 1: Application Name / project name ────────────────────────
   // The CRR cover page row 1 has paragraphs: [blank][GLIMS INTERFACE][PROCESS COA...]
-  // The name goes into that first blank paragraph.
+  // The name (= application name from UDD cover page) goes into that first blank paragraph.
   if (fields.name) {
     docXml = injectNameIntoCoverPage(docXml, fields.name, injected);
   }
