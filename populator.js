@@ -768,9 +768,26 @@ function injectConclusion(docXml, entries) {
     return `<w:p>${pPr}</w:p>`;
   }
 
+  // Strip any embedded CRQ number from the project name before building the heading.
+  // Some UDD revision log entries contain the CRQ inline with the project title
+  // (e.g. "CoA Harmonization CRQ110605" or "Metrology: CRQ000000246287").
+  // Without this, the CRQ would appear twice: once inside the project name and once
+  // appended by the template — producing "CoA Harmonization CRQ110605 – CRQ110605:".
+  function cleanProjectName(rawName, crq) {
+    // Build a regex that matches the CRQ token (with or without spaces/colons/dashes before it)
+    // e.g. " CRQ110605", ":CRQ110605", "- CRQ110605", " CRQ 110605" etc.
+    const digits = crq.replace(/^CRQ\s*/i, '');        // just the numeric part
+    const pattern = new RegExp(
+      '(\\s*[:\\-]?\\s*CRQ\\s*' + digits.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')',
+      'gi'
+    );
+    return rawName.replace(pattern, '').trim().replace(/[:\-\s]+$/, '').trim();
+  }
+
   const parasXml = [];
   for (let k = 0; k < entries.length; k++) {
-    const { projectName, crqNumber } = entries[k];
+    const { projectName: rawProjectName, crqNumber } = entries[k];
+    const projectName = cleanProjectName(rawProjectName, crqNumber);
     parasXml.push(makePara(`${projectName} \u2013 ${crqNumber}:`));
     parasXml.push(makePara('All changes for this CRQ are ok and accepted.'));
     // Add a blank line between entries (not after the last)

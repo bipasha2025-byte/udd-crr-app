@@ -206,6 +206,93 @@ console.log('\n[Test E] extractFieldsFromUDD — conclusionEntries present in re
 }
 
 // ─────────────────────────────────────────────────────────────────
+// TEST F: injectConclusion — CRQ embedded in project name is stripped (no duplicate)
+// ─────────────────────────────────────────────────────────────────
+console.log('\n[Test F] injectConclusion — CRQ embedded in project name must not appear twice');
+{
+  const docXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+<w:tbl>
+  <w:tr>
+    <w:tc><w:p><w:r><w:t>Comments or Recommendations:</w:t></w:r></w:p></w:tc>
+  </w:tr>
+  <w:tr>
+    <w:tc><w:p/><w:p/><w:p/></w:tc>
+  </w:tr>
+</w:tbl>
+</w:body>
+</w:document>`;
+
+  const zip = new PizZip();
+  zip.file('[Content_Types].xml', `<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>`);
+  zip.file('_rels/.rels', `<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>`);
+  zip.file('word/document.xml', docXml);
+  zip.file('word/_rels/document.xml.rels', `<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>`);
+  const buf = zip.generate({ type: 'nodebuffer', compression: 'DEFLATE' });
+
+  // Cases where the CRQ is already embedded in the projectName (the bug)
+  const fields = {
+    conclusionEntries: [
+      // "CoA Harmonization CRQ110605"   → should produce "CoA Harmonization – CRQ110605:"
+      { projectName: 'CoA Harmonization CRQ110605',     crqNumber: 'CRQ110605' },
+      // "Metrology: CRQ000000246287"    → should produce "Metrology – CRQ000000246287:"
+      { projectName: 'Metrology: CRQ000000246287',       crqNumber: 'CRQ000000246287' },
+      // "UCB_RUN" (no embedded CRQ)     → should produce "UCB_RUN – CRQ000000322074:"
+      { projectName: 'UCB_RUN',                          crqNumber: 'CRQ000000322074' },
+      // "SAP PE1: InfleXio..." (no CRQ) → preserved verbatim
+      { projectName: 'SAP PE1: InfleXio (INFL_QM_42) - GLIMS Additional Fields mapping to SAP',
+        crqNumber: 'CRQ000010003494' },
+    ],
+  };
+
+  try {
+    const outBuf = populateCRR(buf, fields);
+    const outZip = new PizZip(outBuf);
+    const outXml = outZip.file('word/document.xml').asText();
+
+    // ── Case 1: "CoA Harmonization CRQ110605" ─────────────────────
+    // CRQ must appear exactly once — not duplicated inside project name
+    const coaHeading = 'CoA Harmonization \u2013 CRQ110605:';
+    assert(outXml.includes(coaHeading),
+      `Case 1: heading = "CoA Harmonization – CRQ110605:" (correct)`);
+    assert(!outXml.includes('CRQ110605 \u2013 CRQ110605') && !outXml.includes('CRQ110605\u2013CRQ110605'),
+      'Case 1: CRQ110605 does NOT appear twice in heading');
+
+    // ── Case 2: "Metrology: CRQ000000246287" ──────────────────────
+    const metHeading = 'Metrology \u2013 CRQ000000246287:';
+    assert(outXml.includes(metHeading),
+      `Case 2: heading = "Metrology – CRQ000000246287:" (correct)`);
+    assert(!outXml.includes('CRQ000000246287 \u2013 CRQ000000246287'),
+      'Case 2: CRQ000000246287 does NOT appear twice in heading');
+
+    // ── Case 3: "UCB_RUN" (CRQ not embedded — project name must be untouched)
+    assert(outXml.includes('UCB_RUN \u2013 CRQ000000322074:'),
+      'Case 3: heading = "UCB_RUN – CRQ000000322074:" (name without embedded CRQ preserved)');
+
+    // ── Case 4: long SAP project name (no CRQ embedded — must be preserved verbatim)
+    assert(outXml.includes('SAP PE1: InfleXio (INFL_QM_42) - GLIMS Additional Fields mapping to SAP \u2013 CRQ000010003494:'),
+      'Case 4: long project name preserved verbatim with CRQ appended once');
+
+    // All four entries produce the fixed sentence
+    const matches = (outXml.match(/All changes for this CRQ are ok and accepted\./g) || []).length;
+    assert(matches === 4, `4 fixed sentences present (one per entry) — got ${matches}`);
+
+  } catch (e) {
+    console.error('  ✗  Test F threw:', e.message);
+    failed++;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────
 console.log(`\n${'─'.repeat(50)}`);
 console.log(`Results: ${passed} passed, ${failed} failed`);
 if (failed > 0) {
