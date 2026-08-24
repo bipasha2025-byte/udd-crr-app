@@ -692,6 +692,112 @@ function injectCopiedObjectsTable(docXml, appComponents) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// Section 19 CONCLUSION — Comments or Recommendations injection
+// ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Inject conclusion entries into CRR Section 19 > "Comments or Recommendations".
+ *
+ * The CRR template contains two single-cell rows at the end:
+ *   ROW A: "Comments or Recommendations:"  (label — do NOT modify)
+ *   ROW B: 22 blank <w:p> paragraphs       (content area — inject here)
+ *
+ * For each { projectName, crqNumber } entry we generate:
+ *   Line 1: "[projectName] – [crqNumber]:"
+ *   Line 2: "All changes for this CRQ are ok and accepted."
+ *   (blank line between entries)
+ *
+ * Strategy:
+ *   1. Find ROW A by label "comments or recommendations".
+ *   2. Take the VERY NEXT single-cell row as ROW B.
+ *   3. Extract paragraph/run properties from the first paragraph of ROW B
+ *      to preserve font/spacing/formatting.
+ *   4. Replace all existing paragraphs in ROW B with the generated content.
+ *
+ * @param {string} docXml
+ * @param {{ projectName: string, crqNumber: string }[]} entries
+ * @returns {string} modified docXml
+ */
+function injectConclusion(docXml, entries) {
+  if (!entries || entries.length === 0) return docXml;
+
+  // ── Step 1: collect all row positions ───────────────────────────────────────
+  const rowRe = /(<w:tr[ >][\s\S]*?<\/w:tr>)/g;
+  const allRows = [];
+  let m;
+  while ((m = rowRe.exec(docXml)) !== null) {
+    allRows.push({ xml: m[1], index: m.index, length: m[1].length });
+  }
+
+  // ── Step 2: find the label row ──────────────────────────────────────────────
+  let labelRowIdx = -1;
+  for (let i = 0; i < allRows.length; i++) {
+    const text = extractTextFromXml(allRows[i].xml).replace(/\s+/g, ' ').toLowerCase();
+    if (text.includes('comments or recommendations')) {
+      labelRowIdx = i;
+      break;
+    }
+  }
+  if (labelRowIdx === -1) return docXml; // section not found — leave unchanged
+
+  // ── Step 3: find the content row (first single-cell row after label) ─────────
+  let contentRowIdx = -1;
+  for (let i = labelRowIdx + 1; i < allRows.length; i++) {
+    const cells = splitRowIntoCells(allRows[i].xml);
+    if (cells.length === 1) { contentRowIdx = i; break; }
+  }
+  if (contentRowIdx === -1) return docXml; // content row not found
+
+  const contentRow = allRows[contentRowIdx];
+  const contentCells = splitRowIntoCells(contentRow.xml);
+  const cellXml = contentCells[0].xml;
+
+  // ── Step 4: extract paragraph properties from first <w:p> for formatting ────
+  const pPrMatch = cellXml.match(/<w:pPr>[\s\S]*?<\/w:pPr>/);
+  const pPr = pPrMatch ? pPrMatch[0] : '';
+  // Extract run properties from any existing run (may not exist in blank cell)
+  const rPrMatch = cellXml.match(/<w:rPr>[\s\S]*?<\/w:rPr>/);
+  const rPr = rPrMatch ? rPrMatch[0] : '';
+
+  // ── Step 5: build replacement paragraphs ────────────────────────────────────
+  function makePara(text) {
+    const encoded = encodeXmlEntities(text);
+    return `<w:p>${pPr}<w:r>${rPr}<w:t xml:space="preserve">${encoded}</w:t></w:r></w:p>`;
+  }
+  function makeBlankPara() {
+    return `<w:p>${pPr}</w:p>`;
+  }
+
+  const parasXml = [];
+  for (let k = 0; k < entries.length; k++) {
+    const { projectName, crqNumber } = entries[k];
+    parasXml.push(makePara(`${projectName} \u2013 ${crqNumber}:`));
+    parasXml.push(makePara('All changes for this CRQ are ok and accepted.'));
+    // Add a blank line between entries (not after the last)
+    if (k < entries.length - 1) {
+      parasXml.push(makeBlankPara());
+    }
+  }
+
+  // ── Step 6: rebuild the content cell with new paragraphs ────────────────────
+  const tcPrMatch = cellXml.match(/<w:tcPr>[\s\S]*?<\/w:tcPr>/);
+  const tcPr = tcPrMatch ? tcPrMatch[0] : '';
+  const newCellXml = `<w:tc>${tcPr}${parasXml.join('')}</w:tc>`;
+
+  // Rebuild the content row with the new cell
+  const trPrMatch = contentRow.xml.match(/<w:trPr>[\s\S]*?<\/w:trPr>/);
+  const trPr = trPrMatch ? trPrMatch[0] : '';
+  // Preserve the outer <w:tr> attributes
+  const trOpen = contentRow.xml.match(/^<w:tr[^>]*>/)?.[0] || '<w:tr>';
+  const newRowXml = `${trOpen}${trPr}${newCellXml}</w:tr>`;
+
+  // ── Step 7: splice into docXml ───────────────────────────────────────────────
+  const spliceStart = contentRow.index;
+  const spliceEnd   = contentRow.index + contentRow.length;
+  return docXml.substring(0, spliceStart) + newRowXml + docXml.substring(spliceEnd);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Review type injection
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -831,6 +937,11 @@ function populateCRR(crrBuffer, fields) {
   // ── Copied Objects table — replace existing data rows with UDD app components ─
   if (fields.appComponents && fields.appComponents.length > 0) {
     docXml = injectCopiedObjectsTable(docXml, fields.appComponents);
+  }
+
+  // ── Section 19 CONCLUSION — Comments or Recommendations ──────────────────────
+  if (fields.conclusionEntries && fields.conclusionEntries.length > 0) {
+    docXml = injectConclusion(docXml, fields.conclusionEntries);
   }
 
   zip.file('word/document.xml', docXml);

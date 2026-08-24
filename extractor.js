@@ -624,6 +624,36 @@ function extractProjectName(lines) {
   return latest.projectName || null;
 }
 
+/**
+ * Extract all unique { projectName, crqNumber } pairs from ALL revision log entries.
+ *
+ * Used to populate CRR Section 19 (CONCLUSION > Comments or Recommendations).
+ * Rules:
+ *   - Only include entries that have BOTH a valid projectName AND at least one CRQ number.
+ *   - Deduplicate by projectName + crqNumber combination.
+ *   - Each entry in the returned array generates one block in the CRR:
+ *       "[projectName] – [crqNumber]:\nAll changes for this CRQ are ok and accepted."
+ *
+ * @param {string[]} lines - mammoth-extracted lines from the UDD
+ * @returns {{ projectName: string, crqNumber: string }[]}
+ */
+function extractConclusionEntries(lines) {
+  const entries = parseRevisionLog(lines);
+  const seen = new Set();
+  const result = [];
+  for (const entry of entries) {
+    if (!entry.projectName) continue;
+    if (entry.crqNumbers.length === 0) continue;
+    // Use the first (most prominent) CRQ for each entry
+    const crqNumber = entry.crqNumbers[0];
+    const key = `${entry.projectName}||${crqNumber}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push({ projectName: entry.projectName, crqNumber });
+  }
+  return result;
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // App Components & Objects extractor (UDD 7.2 → CRR "Copied objects" table)
 // ──────────────────────────────────────────────────────────────────────────────
@@ -880,13 +910,14 @@ function extractFieldsFromUDD(rawText) {
   // relatedUDDName is injected by server.js from the uploaded filename
   // sopConventions and devLanguage are fixed values — populated in populator.js
 
-  const appComponents = extractAppComponents(lines);
+  const appComponents      = extractAppComponents(lines);
+  const conclusionEntries  = extractConclusionEntries(lines);
 
   return {
     name, crrTitle, uddCreationDate, developmentType,
     reviewer, developerFunction, developerName,
     r3Version, sourceSystem, legacySystem,
-    crqNumber, projectName, appComponents,
+    crqNumber, projectName, appComponents, conclusionEntries,
   };
 }
 
@@ -916,4 +947,4 @@ function validateExtraction(fields) {
   return errors;
 }
 
-module.exports = { extractFieldsFromUDD, validateExtraction };
+module.exports = { extractFieldsFromUDD, validateExtraction, extractConclusionEntries };
