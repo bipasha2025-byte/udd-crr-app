@@ -13,14 +13,14 @@
  *
  * Fix 3a: 'Development Class' missing from APP_COMPONENT_CATEGORIES → ZUWM row dropped.
  * Fix 3b: objectType must be a direct, exact copy of the UDD label — no translation.
- * Fix 3c: codeVersion was null; now defaults to 'N/A'.
+ * Fix 3c: codeVersion: UDD 7.2 has no version column → leave blank (DIRECT_COPY_IF_AVAILABLE).
  *
  * Reference example (spec exact input):
  *   UDD row 1: label='Development Class', name='ZUWM',      existing=Y, new='',  upgrade=''
  *   UDD row 2: label='Secondary Index',   name='VLPMA~ZVL', existing='', new=Y, upgrade=''
  *   Expected CRR:
- *     row 1 → Name: ZUWM,      Object Type: Development Class, Code Version: N/A, Comment: ''
- *     row 2 → Name: VLPMA~ZVL, Object Type: Secondary Index,   Code Version: N/A, Comment: ''
+ *     row 1 → Name: ZUWM,      Object Type: Development Class, Code Version: '', Comment: ''
+ *     row 2 → Name: VLPMA~ZVL, Object Type: Secondary Index,   Code Version: '', Comment: ''
  */
 
 const { extractFieldsFromUDD } = require('./extractor');
@@ -259,9 +259,9 @@ console.log('\n[Test 7] Exact bug report case: Development Class/ZUWM + Secondar
     // Fix 3b: objectType is a direct copy of the UDD label — no translation
     assert(c[0].objectType === 'Development Class',
       `row 0 objectType = "Development Class" (direct copy, not "Package") (got "${c[0].objectType}")`);
-    // Fix 3c: codeVersion defaults to 'N/A'
-    assert(c[0].codeVersion === 'N/A',
-      `row 0 codeVersion = "N/A"`);
+    // Fix 3c: codeVersion is blank (UDD 7.2 has no version column)
+    assert(c[0].codeVersion === '',
+      `row 0 codeVersion = "" (blank — no version in UDD 7.2)`);
     assert(c[0].comment === null,
       `row 0 comment = null (no CRQ)`);
 
@@ -270,8 +270,8 @@ console.log('\n[Test 7] Exact bug report case: Development Class/ZUWM + Secondar
     // Fix 3b: objectType is a direct copy of the UDD label — no translation
     assert(c[1].objectType === 'Secondary Index',
       `row 1 objectType = "Secondary Index" (direct copy, not "Table Index (Secondary Index)") (got "${c[1].objectType}")`);
-    assert(c[1].codeVersion === 'N/A',
-      `row 1 codeVersion = "N/A"`);
+    assert(c[1].codeVersion === '',
+      `row 1 codeVersion = "" (blank — no version in UDD 7.2)`);
     assert(c[1].comment === null,
       `row 1 comment = null (no CRQ)`);
   }
@@ -315,9 +315,9 @@ console.log('\n[Test 8] objectType is a direct copy of UDD label for all categor
 }
 
 // ─────────────────────────────────────────────────────────────────
-// TEST 9: codeVersion defaults to 'N/A' across all object types
+// TEST 9: codeVersion is blank (no version column in UDD 7.2)
 // ─────────────────────────────────────────────────────────────────
-console.log('\n[Test 9] codeVersion defaults to "N/A" for all rows (UDD 7.2 has no version column)');
+console.log('\n[Test 9] codeVersion is blank for all rows (UDD 7.2 has no version column)');
 {
   const udd = [
     '', 'unit detailed design', '', 'SAP ECC/6.0', '',
@@ -333,8 +333,8 @@ console.log('\n[Test 9] codeVersion defaults to "N/A" for all rows (UDD 7.2 has 
   const c = fields.appComponents;
 
   assert(Array.isArray(c) && c.length === 1, `1 component (got ${c ? c.length : 'null'})`);
-  assert(c && c[0] && c[0].codeVersion === 'N/A',
-    `codeVersion = "N/A" (got "${c && c[0] && c[0].codeVersion}")`);
+  assert(c && c[0] && c[0].codeVersion === '',
+    `codeVersion = "" blank (got "${c && c[0] && c[0].codeVersion}")`);
   // Comment still works correctly
   assert(c && c[0] && c[0].comment === 'CRQ10001111',
     `comment = "CRQ10001111" unchanged`);

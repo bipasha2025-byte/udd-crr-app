@@ -881,11 +881,12 @@ function extractAppComponents(lines) {
 
     // Emit one row per name
     // objectType is the exact UDD 'App Components & Objects' label — copied directly, no translation
+    // codeVersion: UDD 7.2 has no version column — leave blank per spec (DIRECT_COPY_IF_AVAILABLE)
     for (let k = 0; k < names.length; k++) {
       results.push({
         name:        names[k],
         objectType:  objectType,
-        codeVersion: 'N/A',    // UDD 7.2 does not carry a code version; default to N/A per spec
+        codeVersion: '',
         comment:     upgrades[k] || null,
       });
     }
