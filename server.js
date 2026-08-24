@@ -8,6 +8,18 @@ const fse = require('fs-extra');
 const mammoth = require('mammoth');
 const { v4: uuidv4 } = require('uuid');
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Internal CRR master template — stored in templates/ at deploy time.
+// Loaded once at startup; never modified at runtime.
+// ──────────────────────────────────────────────────────────────────────────────
+const CRR_TEMPLATE_PATH = path.join(__dirname, 'templates', 'CRR_Master_Template.docx');
+if (!fs.existsSync(CRR_TEMPLATE_PATH)) {
+  console.error('FATAL: CRR master template not found at', CRR_TEMPLATE_PATH);
+  process.exit(1);
+}
+const CRR_MASTER_BUFFER = fs.readFileSync(CRR_TEMPLATE_PATH);
+console.log(`CRR master template loaded: ${CRR_TEMPLATE_PATH} (${CRR_MASTER_BUFFER.length} bytes)`);
+
 /**
  * Returns today's date formatted as DD-Mon-YYYY (e.g. "15-Jun-2025").
  * This is always later than any UDD creation date from the past.
@@ -64,9 +76,23 @@ const upload = multer({
   limits: { fileSize: 50 * 1024 * 1024 }, // 50 MB
 });
 
+// UDD-only upload handler — only the 'udd' field is accepted now
+const uploadUDD = multer({
+  storage,
+  fileFilter: (req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (ext !== '.docx') {
+      return cb(new Error('Please upload a valid DOCX document.'));
+    }
+    cb(null, true);
+  },
+  limits: { fileSize: 50 * 1024 * 1024 },
+});
+
 // ──────────────────────────────────────────────────────────────────────────────
 // In-memory session store (keyed by session UUID)
-// Sessions hold: uddPath, crrPath, crrOriginalName, extractedFields, generatedPath
+// Sessions hold: uddPath, extractedFields, generatedPath
+// (crrPath is no longer stored — the internal template is always used)
 // ──────────────────────────────────────────────────────────────────────────────
 const sessions = new Map();
 
@@ -91,54 +117,35 @@ setInterval(() => {
 function cleanupSession(id) {
   const sess = sessions.get(id);
   if (!sess) return;
-  if (sess.uddPath) fse.removeSync(sess.uddPath);
-  if (sess.crrPath) fse.removeSync(sess.crrPath);
+  if (sess.uddPath)      fse.removeSync(sess.uddPath);
   if (sess.generatedPath) fse.removeSync(sess.generatedPath);
+  // No crrPath to clean — the internal template is never written per-session
   sessions.delete(id);
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Route: POST /api/upload
-// Accepts both UDD and CRR files, creates a session, extracts fields from UDD.
+// Accepts only the UDD file. The CRR master template is loaded internally.
 // ──────────────────────────────────────────────────────────────────────────────
 app.post(
   '/api/upload',
-  upload.fields([
-    { name: 'udd', maxCount: 1 },
-    { name: 'crr', maxCount: 1 },
-  ]),
+  uploadUDD.single('udd'),
   async (req, res) => {
     try {
-      const uddFile = req.files?.udd?.[0];
-      const crrFile = req.files?.crr?.[0];
+      const uddFile = req.file;
 
       if (!uddFile) {
-        cleanupUploadedFiles([crrFile]);
         return res.status(400).json({ error: 'Please upload the UDD document.' });
       }
-      if (!crrFile) {
-        cleanupUploadedFiles([uddFile]);
-        return res.status(400).json({ error: 'Please upload the CRR template.' });
-      }
 
-      // Extract text from UDD using mammoth (preserves table structure via newlines)
+      // Extract text from UDD using mammoth
       let uddText;
       try {
         const result = await mammoth.extractRawText({ path: uddFile.path });
         uddText = result.value;
       } catch (e) {
-        cleanupUploadedFiles([uddFile, crrFile]);
+        fse.removeSync(uddFile.path);
         return res.status(422).json({ error: 'Unable to read the UDD document. Please ensure it is a valid DOCX file.' });
-      }
-
-      // Validate CRR is readable
-      try {
-        const PizZip = require('pizzip');
-        const buf = fs.readFileSync(crrFile.path);
-        new PizZip(buf); // will throw if invalid
-      } catch (e) {
-        cleanupUploadedFiles([uddFile, crrFile]);
-        return res.status(422).json({ error: 'Unable to read the CRR template. Please ensure it is a valid DOCX file.' });
       }
 
       // Extract fields from UDD
@@ -151,13 +158,11 @@ app.post(
       const uddBaseName = path.basename(uddFile.originalname, path.extname(uddFile.originalname));
       fields.relatedUDDName = uddBaseName;
 
-      // Create session
+      // Create session — no crrPath needed; the internal master template is used at generate time
       const sessionId = uuidv4();
       sessions.set(sessionId, {
         createdAt: Date.now(),
         uddPath: uddFile.path,
-        crrPath: crrFile.path,
-        crrOriginalName: crrFile.originalname,
         extractedFields: fields,
         generatedPath: null,
       });
@@ -216,13 +221,8 @@ app.post('/api/generate', express.json(), async (req, res) => {
       return res.status(422).json({ errors });
     }
 
-    // Read CRR buffer
-    let crrBuffer;
-    try {
-      crrBuffer = fs.readFileSync(sess.crrPath);
-    } catch (e) {
-      return res.status(500).json({ error: 'CRR template file is no longer available. Please re-upload.' });
-    }
+    // Use the internal CRR master template buffer (loaded once at startup)
+    const crrBuffer = CRR_MASTER_BUFFER;
 
     // Inject CRR Creation Date = today's date (always later than the UDD creation date)
     finalFields.crrCreationDate = todayFormatted();
@@ -236,10 +236,9 @@ app.post('/api/generate', express.json(), async (req, res) => {
       return res.status(500).json({ error: 'Failed to populate the CRR template: ' + e.message });
     }
 
-    // Build output filename
-    const crrBase = path.basename(sess.crrOriginalName, '.docx');
-    // Use CRR title from fields if available, otherwise use CRR filename
-    const titleBase = finalFields.crrTitle || crrBase;
+    // Build output filename — use the extracted CRR title if available,
+    // otherwise fall back to the internal template name
+    const titleBase = finalFields.crrTitle || 'CRR';
     const safeTitle = titleBase.replace(/[^a-zA-Z0-9\-_]/g, '_');
     const outputFilename = `${safeTitle}_Filled.docx`;
     const outputPath = path.join(GENERATED_DIR, `${sessionId}_${outputFilename}`);

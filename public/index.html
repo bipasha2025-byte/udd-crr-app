@@ -106,12 +106,10 @@
     /* ── Upload Row ───────────────────────────────────────────── */
     .upload-row {
       display: grid;
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: 1fr;
       gap: 20px;
       margin-bottom: 24px;
-    }
-    @media (max-width: 600px) {
-      .upload-row { grid-template-columns: 1fr; }
+      max-width: 420px;
     }
 
     /* ── Drop Zone ────────────────────────────────────────────── */
@@ -311,8 +309,8 @@
   <!-- ── SCREEN 1: Upload ──────────────────────────────────────────── -->
   <div class="screen active" id="screen-upload">
     <div class="card">
-      <div class="card-title">Upload Documents</div>
-      <div class="card-subtitle">Upload both the UDD (source) and the CRR template. Only .docx files are accepted.</div>
+      <div class="card-title">Upload UDD Document</div>
+      <div class="card-subtitle">Upload your UDD (.docx). The CRR template is built into the application and will be loaded automatically.</div>
 
       <div id="upload-errors"></div>
 
@@ -335,26 +333,6 @@
             <div class="drop-label">Upload UDD Document</div>
             <div class="drop-hint">Click or drag &amp; drop · .docx only</div>
             <div class="drop-filename" id="udd-filename"></div>
-          </div>
-        </div>
-
-        <!-- CRR Drop Zone -->
-        <div>
-          <div class="section-label">CRR Template</div>
-          <div class="drop-zone" id="dz-crr">
-            <input type="file" id="input-crr" accept=".docx" />
-            <div class="drop-icon">
-              <svg viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                <polyline points="14 2 14 8 20 8"/>
-                <line x1="16" y1="13" x2="8" y2="13"/>
-                <line x1="16" y1="17" x2="8" y2="17"/>
-                <line x1="12" y1="9" x2="8" y2="9"/>
-              </svg>
-            </div>
-            <div class="drop-label">Upload CRR Template</div>
-            <div class="drop-hint">Click or drag &amp; drop · .docx only</div>
-            <div class="drop-filename" id="crr-filename"></div>
           </div>
         </div>
 
@@ -453,7 +431,7 @@
   // ── State ─────────────────────────────────────────────────────────────────
   let state = {
     uddFile: null,
-    crrFile: null,
+    // crrFile removed — CRR template is internal to the server
     sessionId: null,
     fields: {},
     reviewType: null,    // 'full_review' | 'changed_objects_removed'
@@ -509,11 +487,8 @@
   };
 
   const dzUDD  = document.getElementById('dz-udd');
-  const dzCRR  = document.getElementById('dz-crr');
   const inUDD  = document.getElementById('input-udd');
-  const inCRR  = document.getElementById('input-crr');
   const fnUDD  = document.getElementById('udd-filename');
-  const fnCRR  = document.getElementById('crr-filename');
 
   const btnGenerate = document.getElementById('btn-generate');
   const btnConfirm  = document.getElementById('btn-confirm');
@@ -621,7 +596,8 @@
   }
 
   function updateGenerateBtn() {
-    btnGenerate.disabled = !(state.uddFile && state.crrFile && state.reviewType) || state.processing;
+    // CRR is internal — only UDD upload and review type selection are required
+    btnGenerate.disabled = !(state.uddFile && state.reviewType) || state.processing;
   }
 
   // ── Review type radio buttons ──────────────────────────────────────────────
@@ -647,12 +623,10 @@
   rtChanged.addEventListener('change', onReviewTypeChange);
 
   setupDropZone(dzUDD, inUDD, fnUDD, 'uddFile');
-  setupDropZone(dzCRR, inCRR, fnCRR, 'crrFile');
 
   // ── Upload & Extract ──────────────────────────────────────────────────────
   btnGenerate.addEventListener('click', async () => {
     if (!state.uddFile) return setError(uploadErrors, 'Please upload the UDD document.');
-    if (!state.crrFile) return setError(uploadErrors, 'Please upload the CRR template.');
 
     state.processing = true;
     setBtnLoading(btnGenerate, true, 'Generate Updated CRR', 'Extracting information…');
@@ -661,7 +635,7 @@
     try {
       const fd = new FormData();
       fd.append('udd', state.uddFile);
-      fd.append('crr', state.crrFile);
+      // No CRR upload — server uses internal template
 
       const resp = await fetch('/api/upload', { method: 'POST', body: fd });
       const data = await resp.json();
@@ -841,10 +815,9 @@
     if (state.sessionId) {
       fetch(`/api/session/${state.sessionId}`, { method: 'DELETE' }).catch(() => {});
     }
-    // Reset state
-    state = { uddFile: null, crrFile: null, sessionId: null, fields: {}, outputFilename: null, processing: false };
+    // Reset state — no crrFile to clear
+    state = { uddFile: null, sessionId: null, fields: {}, outputFilename: null, processing: false };
     inUDD.value = ''; dzUDD.classList.remove('filled'); fnUDD.textContent = '';
-    inCRR.value = ''; dzCRR.classList.remove('filled'); fnCRR.textContent = '';
     setError(uploadErrors, []);
     updateGenerateBtn();
     showScreen('upload');
