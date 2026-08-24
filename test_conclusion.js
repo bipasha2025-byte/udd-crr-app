@@ -165,6 +165,11 @@ console.log('\n[Test D] populateCRR — injectConclusion writes correct text int
     assert(outXml.includes('CRQ00000322074'), 'CRQ 2 injected');
     assert(outXml.includes('All changes for this CRQ are ok and accepted.'),
       'Fixed sentence injected');
+    // COMMENTS block must appear after each acceptance sentence
+    assert(outXml.includes('COMMENTS:'), 'COMMENTS: label injected');
+    assert(outXml.includes('>N/A<'), 'N/A default comment injected');
+    const commentMatches = (outXml.match(/COMMENTS:/g) || []).length;
+    assert(commentMatches === 2, `COMMENTS: appears once per entry (2 entries → got ${commentMatches})`);
     // The em dash – (U+2013) should appear between project name and CRQ
     assert(outXml.includes('\u2013'), 'Em dash separator present');
     // Label row must remain untouched
@@ -285,6 +290,11 @@ console.log('\n[Test F] injectConclusion — CRQ embedded in project name must n
     // All four entries produce the fixed sentence
     const matches = (outXml.match(/All changes for this CRQ are ok and accepted\./g) || []).length;
     assert(matches === 4, `4 fixed sentences present (one per entry) — got ${matches}`);
+    // All four entries produce a COMMENTS: block with N/A
+    const commentCount = (outXml.match(/COMMENTS:/g) || []).length;
+    assert(commentCount === 4, `COMMENTS: appears once per entry (4 entries → got ${commentCount})`);
+    const naCount = (outXml.match(/>N\/A</g) || []).length;
+    assert(naCount === 4, `N/A appears once per entry (4 entries → got ${naCount})`);
 
   } catch (e) {
     console.error('  ✗  Test F threw:', e.message);

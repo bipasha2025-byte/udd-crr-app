@@ -790,7 +790,11 @@ function injectConclusion(docXml, entries) {
     const projectName = cleanProjectName(rawProjectName, crqNumber);
     parasXml.push(makePara(`${projectName} \u2013 ${crqNumber}:`));
     parasXml.push(makePara('All changes for this CRQ are ok and accepted.'));
-    // Add a blank line between entries (not after the last)
+    // COMMENTS block — appears after the acceptance sentence for every project entry
+    parasXml.push(makeBlankPara());
+    parasXml.push(makePara('COMMENTS:'));
+    parasXml.push(makePara('N/A'));
+    // Blank separator between entries (not after the last)
     if (k < entries.length - 1) {
       parasXml.push(makeBlankPara());
     }
