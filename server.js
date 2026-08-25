@@ -148,8 +148,11 @@ app.post(
         return res.status(422).json({ error: 'Unable to read the UDD document. Please ensure it is a valid DOCX file.' });
       }
 
-      // Extract fields from UDD
-      const fields = extractFieldsFromUDD(uddText);
+      // Read raw buffer for XML-direct extraction (App Components table)
+      const uddBuffer = fs.readFileSync(uddFile.path);
+
+      // Extract fields from UDD — pass buffer so App Components uses XML path
+      const fields = extractFieldsFromUDD(uddText, uddBuffer);
       const errors = validateExtraction(fields);
 
       // Derive relatedUDDName from the original UDD filename — strip only the .docx extension,

@@ -667,7 +667,156 @@ function extractConclusionEntries(lines) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// App Components & Objects extractor (UDD 7.2 → CRR "Copied objects" table)
+// App Components & Objects extractor — XML-direct (UDD 7.2 → CRR Section 4)
+// ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Extract app components by reading the UDD DOCX XML directly (via PizZip).
+ *
+ * The UDD section 7.2 "App Components & Objects" table has 5 columns:
+ *   col[0] = Components / Objects / Object Type   → CRR Object Type
+ *   col[1] = Name                                 → CRR Name of Object
+ *   col[2] = Existing                             (skip)
+ *   col[3] = New                                  (skip)
+ *   col[4] = Upgrade Implications / Change Request → CRR Comment
+ *
+ * CRR Code Version is always left blank (no version column in UDD 7.2).
+ *
+ * A single cell may contain multiple paragraphs (= multiple object names).
+ * Each paragraph in col[1] produces one output row, paired with:
+ *   - the objectType from col[0] of the same table row
+ *   - the comment from col[4] of the same table row
+ *
+ * Header detection: find a row whose col[0] text matches
+ * "app components" or "components" and col[1] matches "name".
+ *
+ * @param {Buffer} uddBuffer - raw bytes of the uploaded UDD DOCX
+ * @returns {{ name, objectType, codeVersion, comment }[]}
+ */
+function extractAppComponentsFromXml(uddBuffer) {
+  let docXml;
+  try {
+    const PizZip = require('pizzip');
+    const zip = new PizZip(uddBuffer);
+    const docFile = zip.file('word/document.xml');
+    if (!docFile) return [];
+    docXml = docFile.asText();
+  } catch (e) {
+    return [];
+  }
+
+  // ── helpers ──────────────────────────────────────────────────────────────────
+  function cellText(cellXml) {
+    // Concatenate all <w:t> values in a cell
+    const texts = [];
+    const re = /<w:t[^>]*>([^<]*)<\/w:t>/g;
+    let m;
+    while ((m = re.exec(cellXml)) !== null) texts.push(m[1]);
+    return texts.join('').replace(/\s+/g, ' ').trim();
+  }
+
+  function cellParas(cellXml) {
+    // Return one string per <w:p>, containing all <w:t> text in that paragraph
+    const paras = [];
+    const paraRe = /(<w:p[ >][\s\S]*?<\/w:p>)/g;
+    let pm;
+    while ((pm = paraRe.exec(cellXml)) !== null) {
+      const texts = [];
+      const tRe = /<w:t[^>]*>([^<]*)<\/w:t>/g;
+      let tm;
+      while ((tm = tRe.exec(pm[1])) !== null) texts.push(tm[1]);
+      const t = texts.join('').replace(/\s+/g, ' ').trim();
+      if (t) paras.push(t);
+    }
+    return paras;
+  }
+
+  function splitCells(rowXml) {
+    const cells = [];
+    const re = /(<w:tc[ >][\s\S]*?<\/w:tc>)/g;
+    let m;
+    while ((m = re.exec(rowXml)) !== null) cells.push(m[1]);
+    return cells;
+  }
+
+  // ── collect all rows ─────────────────────────────────────────────────────────
+  const allRows = [];
+  const rowRe = /(<w:tr[ >][\s\S]*?<\/w:tr>)/g;
+  let rm;
+  while ((rm = rowRe.exec(docXml)) !== null) {
+    allRows.push(rm[1]);
+  }
+
+  // ── find the header row of the App Components table ───────────────────────────
+  // Header: col[0] contains "app components" or "components", col[1] is "name"
+  let headerIdx = -1;
+  for (let i = 0; i < allRows.length; i++) {
+    const cells = splitCells(allRows[i]);
+    if (cells.length < 2) continue;
+    const c0 = cellText(cells[0]).toLowerCase();
+    const c1 = cellText(cells[1]).toLowerCase();
+    if ((c0.includes('app components') || c0.includes('components')) &&
+        c1 === 'name') {
+      headerIdx = i;
+      break;
+    }
+  }
+  if (headerIdx === -1) return [];
+
+  // ── collect data rows immediately following the header ───────────────────────
+  // Stop when we hit a row that doesn't have exactly 5 cells, or whose first cell
+  // looks like a section heading rather than an object-type label:
+  //   - contains a '?' (e.g. "Overall Review Status?")
+  //   - is longer than 50 chars (long sentence)
+  //   - matches known section-heading keywords
+  const results = [];
+  for (let i = headerIdx + 1; i < allRows.length; i++) {
+    const cells = splitCells(allRows[i]);
+    if (cells.length !== 5) break; // different table — stop
+
+    const objectType = cellText(cells[0]);
+    const names      = cellParas(cells[1]);  // may be multiple paragraphs
+    const comment    = cellText(cells[4]);   // Upgrade Implications / Change Request
+
+    // Stop if col[0] looks like a section heading, not an object-type label
+    if (objectType.includes('?') ||
+        objectType.length > 50 ||
+        /^(overall|review status|data description|checkpoint|section)/i.test(objectType)) {
+      break;
+    }
+
+    // Skip if both objectType and names are empty (structural blank rows)
+    if (!objectType && names.length === 0) continue;
+
+    // Emit one row per name-paragraph, all sharing the same objectType + comment
+    for (const name of names) {
+      if (!name) continue;
+      results.push({
+        name,
+        objectType,
+        codeVersion: '',          // UDD 7.2 has no version column — leave blank
+        comment: comment || null,
+      });
+    }
+
+    // If name cell was empty but objectType present, still emit a blank-name row
+    // so the object type appears in the CRR (reviewer can fill name manually)
+    if (names.length === 0 && objectType) {
+      results.push({
+        name: '',
+        objectType,
+        codeVersion: '',
+        comment: comment || null,
+      });
+    }
+  }
+
+  return results;
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// App Components & Objects extractor — mammoth fallback (plain-text based)
+// Kept for backward compatibility when uddBuffer is not available (unit tests).
 // ──────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -900,10 +1049,14 @@ function extractAppComponents(lines) {
 // ──────────────────────────────────────────────────────────────────────────────
 
 /**
- * @param {string} rawText - plain text extracted from UDD by mammoth
+ * @param {string} rawText   - plain text extracted from UDD by mammoth
+ * @param {Buffer} [uddBuffer] - raw DOCX bytes of the UDD (optional).
+ *   When provided the App Components table is extracted directly from the XML
+ *   which preserves per-cell column structure correctly.
+ *   When absent (e.g. unit tests) falls back to the mammoth plain-text parser.
  * @returns {Object} extracted fields with null for missing ones
  */
-function extractFieldsFromUDD(rawText) {
+function extractFieldsFromUDD(rawText, uddBuffer) {
   const lines = rawText.split('\n');
 
   const name              = extractName(lines);
@@ -926,7 +1079,12 @@ function extractFieldsFromUDD(rawText) {
   // relatedUDDName is injected by server.js from the uploaded filename
   // sopConventions and devLanguage are fixed values — populated in populator.js
 
-  const appComponents      = extractAppComponents(lines);
+  // App Components: prefer XML-direct extraction (correct column structure);
+  // fall back to plain-text parser when buffer not available.
+  const appComponents = uddBuffer
+    ? extractAppComponentsFromXml(uddBuffer)
+    : extractAppComponents(lines);
+
   const conclusionEntries  = extractConclusionEntries(lines);
 
   return {
@@ -964,4 +1122,4 @@ function validateExtraction(fields) {
   return errors;
 }
 
-module.exports = { extractFieldsFromUDD, validateExtraction, extractConclusionEntries };
+module.exports = { extractFieldsFromUDD, validateExtraction, extractConclusionEntries, extractAppComponentsFromXml };
